@@ -20,6 +20,8 @@ use core::hash::{Hash, Hasher};
 use core::intrinsics::abort;
 #[cfg(not(no_global_oom_handling))]
 use core::iter;
+#[cfg(kani)]
+use core::kani;
 use core::marker::{PhantomData, Unsize};
 use core::mem::{self, ManuallyDrop, align_of_val_raw};
 use core::num::NonZeroUsize;
@@ -34,6 +36,8 @@ use core::slice::from_raw_parts_mut;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use core::sync::atomic::{self, Atomic};
 use core::{borrow, fmt, hint};
+
+use safety::{ensures, requires};
 
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::handle_alloc_error;
@@ -56,6 +60,46 @@ use crate::vec::Vec;
 ///
 /// See comment in `Arc::clone`.
 const MAX_REFCOUNT: usize = (isize::MAX) as usize;
+
+/// Contract predicate: `ptr` is the data pointer of an `ArcInner` allocation,
+/// the shape `Arc::into_raw` produces. Layout computability is checked before
+/// any pointer arithmetic; rebuilding the inner pointer and projecting its
+/// `data` field ties the `data_offset` arithmetic back to the real layout.
+/// Runs only under Kani's sequential model.
+#[cfg(kani)]
+fn valid_arc_data_ptr<T: ?Sized>(ptr: *const T) -> bool {
+    if kani::mem::checked_size_of_raw(ptr).is_none()
+        || kani::mem::checked_align_of_raw(ptr).is_none()
+    {
+        return false;
+    }
+    let inner = unsafe { ptr.byte_sub(data_offset(ptr)) as *const ArcInner<T> };
+    let rebuilt = unsafe { &raw const (*inner).data };
+    ptr::addr_eq(rebuilt, ptr) && core::ub_checks::can_dereference(ptr)
+}
+
+/// Reads the strong count through a data pointer, for contract predicates.
+/// `strong` is `ArcInner`'s first field; the atomic load is sound because
+/// contract predicates run under Kani's sequential model.
+#[cfg(kani)]
+fn strong_count_via_ptr<T: ?Sized>(ptr: *const T) -> usize {
+    unsafe {
+        let strong = ptr.byte_sub(data_offset(ptr)) as *const Atomic<usize>;
+        (*strong).load(Relaxed)
+    }
+}
+
+/// Reads the weak count through a data pointer; `weak` is `ArcInner`'s second
+/// field (repr(C): one `Atomic<usize>` past `strong`). Includes the implicit
+/// weak held collectively by the strong handles.
+#[cfg(kani)]
+fn weak_count_via_ptr<T: ?Sized>(ptr: *const T) -> usize {
+    unsafe {
+        let inner = ptr.byte_sub(data_offset(ptr)) as *const u8;
+        let weak = inner.add(mem::size_of::<Atomic<usize>>()) as *const Atomic<usize>;
+        (*weak).load(Relaxed)
+    }
+}
 
 /// The error in case either counter reaches above `MAX_REFCOUNT`, and we can `panic` safely.
 const INTERNAL_OVERFLOW_ERROR: &str = "Arc counter overflow";
@@ -1436,6 +1480,18 @@ impl<T, A: Allocator> Arc<mem::MaybeUninit<T>, A> {
     #[stable(feature = "new_uninit", since = "1.82.0")]
     #[must_use = "`self` will be dropped if the result is not used"]
     #[inline]
+    // can_dereference checks alignment, provenance, and readable size for T;
+    // it cannot express that every byte was actually written. That residue of
+    // the caller's initialization obligation stays with the caller.
+    #[requires({
+        let payload: *const mem::MaybeUninit<T> = &raw const *self;
+        core::ub_checks::can_dereference(payload as *const T)
+    })]
+    #[ensures(|result: &Arc<T, A>| {
+        // Same allocation, now typed T: pointer identity is preserved.
+        Arc::<T, A>::as_ptr(result) == old(Arc::<mem::MaybeUninit<T>, A>::as_ptr(&self)) as *const T
+            && core::ub_checks::can_dereference(Arc::<T, A>::as_ptr(result))
+    })]
     pub unsafe fn assume_init(self) -> Arc<T, A> {
         let (ptr, alloc) = Arc::into_inner_with_allocator(self);
         unsafe { Arc::from_inner_in(ptr.cast(), alloc) }
@@ -1475,6 +1531,20 @@ impl<T, A: Allocator> Arc<[mem::MaybeUninit<T>], A> {
     #[stable(feature = "new_uninit", since = "1.82.0")]
     #[must_use = "`self` will be dropped if the result is not used"]
     #[inline]
+    // can_dereference checks alignment, provenance, and readable size for the
+    // whole [T] slice; per-element initialization stays the caller's obligation.
+    #[requires({
+        let payload: *const [mem::MaybeUninit<T>] = &raw const *self;
+        core::ub_checks::can_dereference(payload as *const [T])
+    })]
+    #[ensures(|result: &Arc<[T], A>| {
+        // Same allocation, same element count, now typed [T].
+        result.len() == old(self.len())
+            && ptr::addr_eq(
+                Arc::<[T], A>::as_ptr(result),
+                old(Arc::<[mem::MaybeUninit<T>], A>::as_ptr(&self)),
+            )
+    })]
     pub unsafe fn assume_init(self) -> Arc<[T], A> {
         let (ptr, alloc) = Arc::into_inner_with_allocator(self);
         unsafe { Arc::from_ptr_in(ptr.as_ptr() as _, alloc) }
@@ -1545,6 +1615,11 @@ impl<T: ?Sized> Arc<T> {
     /// ```
     #[inline]
     #[stable(feature = "rc_raw", since = "1.17.0")]
+    #[requires(valid_arc_data_ptr(ptr) && strong_count_via_ptr(ptr) >= 1)]
+    // Reconstruction transfers ownership of one existing reference: the counts
+    // do not move, and the handle points at the same allocation.
+    #[ensures(|result: &Self| ptr::addr_eq(Arc::as_ptr(result), ptr)
+        && strong_count_via_ptr(ptr) == old(strong_count_via_ptr(ptr)))]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         unsafe { Arc::from_raw_in(ptr, Global) }
     }
@@ -1607,6 +1682,13 @@ impl<T: ?Sized> Arc<T> {
     /// ```
     #[inline]
     #[stable(feature = "arc_mutate_strong_count", since = "1.51.0")]
+    #[requires(valid_arc_data_ptr(ptr) && strong_count_via_ptr(ptr) >= 1)]
+    #[ensures(|_| strong_count_via_ptr(ptr) == old(strong_count_via_ptr(ptr)) + 1)]
+    // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
+    #[cfg_attr(kani, kani::modifies({
+        let strong = unsafe { ptr.byte_sub(data_offset(ptr)) as *const Atomic<usize> };
+        unsafe { &raw const *strong }
+    }))]
     pub unsafe fn increment_strong_count(ptr: *const T) {
         unsafe { Arc::increment_strong_count_in(ptr, Global) }
     }
@@ -1647,6 +1729,16 @@ impl<T: ?Sized> Arc<T> {
     /// ```
     #[inline]
     #[stable(feature = "arc_mutate_strong_count", since = "1.51.0")]
+    #[requires(valid_arc_data_ptr(ptr) && strong_count_via_ptr(ptr) >= 1)]
+    // A release to zero deallocates the inner; the postcondition must not read
+    // the count on that path, so the relation is guarded by short-circuit `||`.
+    #[ensures(|_| old(strong_count_via_ptr(ptr)) == 1
+        || strong_count_via_ptr(ptr) == old(strong_count_via_ptr(ptr)) - 1)]
+    // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
+    #[cfg_attr(kani, kani::modifies({
+        let strong = unsafe { ptr.byte_sub(data_offset(ptr)) as *const Atomic<usize> };
+        unsafe { &raw const *strong }
+    }))]
     pub unsafe fn decrement_strong_count(ptr: *const T) {
         unsafe { Arc::decrement_strong_count_in(ptr, Global) }
     }
@@ -1789,6 +1881,11 @@ impl<T: ?Sized, A: Allocator> Arc<T, A> {
     /// ```
     #[inline]
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[requires(valid_arc_data_ptr(ptr) && strong_count_via_ptr(ptr) >= 1)]
+    // Reconstruction transfers ownership of one existing reference: the counts
+    // do not move, and the handle points at the same allocation.
+    #[ensures(|result: &Self| ptr::addr_eq(Arc::as_ptr(result), ptr)
+        && strong_count_via_ptr(ptr) == old(strong_count_via_ptr(ptr)))]
     pub unsafe fn from_raw_in(ptr: *const T, alloc: A) -> Self {
         unsafe {
             let offset = data_offset(ptr);
@@ -1945,6 +2042,13 @@ impl<T: ?Sized, A: Allocator> Arc<T, A> {
     /// ```
     #[inline]
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[requires(valid_arc_data_ptr(ptr) && strong_count_via_ptr(ptr) >= 1)]
+    #[ensures(|_| strong_count_via_ptr(ptr) == old(strong_count_via_ptr(ptr)) + 1)]
+    // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
+    #[cfg_attr(kani, kani::modifies({
+        let strong = unsafe { ptr.byte_sub(data_offset(ptr)) as *const Atomic<usize> };
+        unsafe { &raw const *strong }
+    }))]
     pub unsafe fn increment_strong_count_in(ptr: *const T, alloc: A)
     where
         A: Clone,
@@ -1994,6 +2098,16 @@ impl<T: ?Sized, A: Allocator> Arc<T, A> {
     /// ```
     #[inline]
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[requires(valid_arc_data_ptr(ptr) && strong_count_via_ptr(ptr) >= 1)]
+    // A release to zero deallocates the inner; the postcondition must not read
+    // the count on that path, so the relation is guarded by short-circuit `||`.
+    #[ensures(|_| old(strong_count_via_ptr(ptr)) == 1
+        || strong_count_via_ptr(ptr) == old(strong_count_via_ptr(ptr)) - 1)]
+    // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
+    #[cfg_attr(kani, kani::modifies({
+        let strong = unsafe { ptr.byte_sub(data_offset(ptr)) as *const Atomic<usize> };
+        unsafe { &raw const *strong }
+    }))]
     pub unsafe fn decrement_strong_count_in(ptr: *const T, alloc: A) {
         unsafe { drop(Arc::from_raw_in(ptr, alloc)) };
     }
@@ -2604,6 +2718,11 @@ impl<T: ?Sized, A: Allocator> Arc<T, A> {
     /// ```
     #[inline]
     #[unstable(feature = "get_mut_unchecked", issue = "63292")]
+    // The exclusivity obligation (no other Arc or Weak dereferenced for the
+    // duration) is temporal; a predicate cannot express it. Harnesses establish
+    // it structurally: the sole handle.
+    #[requires(kani::mem::can_write(Arc::as_ptr(this) as *mut T))]
+    #[ensures(|result: &&mut T| ptr::addr_eq(&raw const **result, Arc::as_ptr(this)))]
     pub unsafe fn get_mut_unchecked(this: &mut Self) -> &mut T {
         // We are careful to *not* create a reference covering the "count" fields, as
         // this would alias with concurrent access to the reference counts (e.g. by `Weak`).
@@ -2835,6 +2954,12 @@ impl<A: Allocator> Arc<dyn Any + Send + Sync, A> {
     /// [`downcast`]: Self::downcast
     #[inline]
     #[unstable(feature = "downcast_unchecked", issue = "90850")]
+    // The documented precondition verbatim: the contained value is a T.
+    #[requires((*self).is::<T>())]
+    #[ensures(|result: &Arc<T, A>| ptr::addr_eq(
+        Arc::<T, A>::as_ptr(result),
+        old(Arc::as_ptr(&self)),
+    ))]
     pub unsafe fn downcast_unchecked<T>(self) -> Arc<T, A>
     where
         T: Any + Send + Sync,
@@ -2945,6 +3070,14 @@ impl<T: ?Sized> Weak<T> {
     /// [`upgrade`]: Weak::upgrade
     #[inline]
     #[stable(feature = "weak_into_raw", since = "1.45.0")]
+    // A raw Weak pointer is either the dangling sentinel (from `Weak::new`) or
+    // the data pointer of a live ArcInner holding at least one weak reference.
+    #[requires(is_dangling(ptr)
+        || (valid_arc_data_ptr(ptr) && weak_count_via_ptr(ptr) >= 1))]
+    #[ensures(|result: &Weak<T>| is_dangling(ptr)
+        || (ptr::addr_eq(result.as_ptr(), ptr)
+            && weak_count_via_ptr(ptr)
+                == old(if is_dangling(ptr) { 0 } else { weak_count_via_ptr(ptr) })))]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         unsafe { Weak::from_raw_in(ptr, Global) }
     }
@@ -3116,6 +3249,14 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     /// [`upgrade`]: Weak::upgrade
     #[inline]
     #[unstable(feature = "allocator_api", issue = "32838")]
+    // A raw Weak pointer is either the dangling sentinel (from `Weak::new`) or
+    // the data pointer of a live ArcInner holding at least one weak reference.
+    #[requires(is_dangling(ptr)
+        || (valid_arc_data_ptr(ptr) && weak_count_via_ptr(ptr) >= 1))]
+    #[ensures(|result: &Weak<T, A>| is_dangling(ptr)
+        || (ptr::addr_eq(result.as_ptr(), ptr)
+            && weak_count_via_ptr(ptr)
+                == old(if is_dangling(ptr) { 0 } else { weak_count_via_ptr(ptr) })))]
     pub unsafe fn from_raw_in(ptr: *const T, alloc: A) -> Self {
         // See Weak::as_ptr for context on how the input pointer is derived.
 
@@ -4835,5 +4976,1128 @@ unsafe impl<T: ?Sized + Allocator, A: Allocator> Allocator for Arc<T, A> {
     ) -> Result<NonNull<[u8]>, AllocError> {
         // SAFETY: the safety contract must be upheld by the caller
         unsafe { (**self).shrink(ptr, old_layout, new_layout) }
+    }
+}
+
+#[cfg(kani)]
+#[unstable(feature = "kani", issue = "none")]
+mod verify {
+    use super::*;
+
+    #[kani::proof]
+    fn check_plumbing() {
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+    }
+
+    #[kani::proof_for_contract(Arc::<u32, Global>::increment_strong_count_in)]
+    fn check_pfc_increment_strong_count_in_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_in(v, Global);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::increment_strong_count_in(ptr, Global) };
+        let a = unsafe { Arc::from_raw(ptr) };
+        assert_eq!(Arc::strong_count(&a), 2);
+        unsafe { Arc::decrement_strong_count(ptr) };
+    }
+
+    #[kani::proof_for_contract(Arc::<u32>::increment_strong_count)]
+    fn check_pfc_increment_strong_count_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::increment_strong_count(ptr) };
+        let a = unsafe { Arc::from_raw(ptr) };
+        assert_eq!(Arc::strong_count(&a), 2);
+        assert_eq!(*a, v);
+        unsafe { Arc::decrement_strong_count(ptr) };
+    }
+
+    #[kani::proof_for_contract(Arc::<u32>::decrement_strong_count)]
+    fn check_pfc_decrement_strong_count_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        let b = Arc::clone(&a);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::decrement_strong_count(ptr) };
+        assert_eq!(Arc::strong_count(&b), 1);
+        assert_eq!(*b, v);
+    }
+
+    #[kani::proof_for_contract(Arc::<u32, Global>::decrement_strong_count_in)]
+    fn check_pfc_decrement_strong_count_in_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_in(v, Global);
+        let b = Arc::clone(&a);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::decrement_strong_count_in(ptr, Global) };
+        assert_eq!(Arc::strong_count(&b), 1);
+        assert_eq!(*b, v);
+    }
+
+    #[kani::proof_for_contract(Arc::<core::mem::MaybeUninit<T>, A>::assume_init)]
+    fn check_pfc_assume_init_u32() {
+        let v: u32 = kani::any();
+        let mut uninit: Arc<mem::MaybeUninit<u32>> = Arc::new_uninit();
+        Arc::get_mut(&mut uninit).unwrap().write(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let init: Arc<u32> = unsafe { uninit.assume_init() };
+        assert_eq!(*init, v);
+    }
+
+    #[kani::proof_for_contract(Arc::<[core::mem::MaybeUninit<T>], A>::assume_init)]
+    #[kani::unwind(21)]
+    fn check_pfc_assume_init_slice_u8() {
+        let len: usize = kani::any();
+        // len <= 20: 40s solve at u8 on this machine; wider caps hit the
+        // macOS CI runner memory ceiling (measured on both Rc and Arc).
+        kani::assume(len <= 20);
+        let mut uninit: Arc<[mem::MaybeUninit<u8>]> = Arc::new_uninit_slice(len);
+        for elem in Arc::get_mut(&mut uninit).unwrap().iter_mut() {
+            elem.write(kani::any::<u8>());
+        }
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let init: Arc<[u8]> = unsafe { uninit.assume_init() };
+        assert_eq!(init.len(), len);
+    }
+
+    #[kani::proof_for_contract(Arc::<u32>::from_raw)]
+    fn check_pfc_from_raw_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { Arc::from_raw(ptr) };
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof_for_contract(Arc::<u32, Global>::from_raw_in)]
+    fn check_pfc_from_raw_in_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_in(v, Global);
+        let (ptr, alloc) = Arc::into_raw_with_allocator(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { Arc::from_raw_in(ptr, alloc) };
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof_for_contract(Weak::<u32>::from_raw)]
+    fn check_pfc_weak_from_raw_live_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        let w = Arc::downgrade(&a);
+        let ptr = w.into_raw();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = unsafe { Weak::from_raw(ptr) };
+        assert_eq!(Arc::weak_count(&a), 1);
+        let up = w.upgrade();
+        assert!(up.is_some());
+        assert_eq!(*up.unwrap(), v);
+    }
+
+    #[kani::proof_for_contract(Weak::<u32>::from_raw)]
+    fn check_pfc_weak_from_raw_dangling_u32() {
+        let w: Weak<u32> = Weak::new();
+        let ptr = w.into_raw();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = unsafe { Weak::from_raw(ptr) };
+        assert!(w.upgrade().is_none());
+    }
+
+    #[kani::proof_for_contract(Weak::<u32, Global>::from_raw_in)]
+    fn check_pfc_weak_from_raw_in_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_in(v, Global);
+        let w = Arc::downgrade(&a);
+        let (ptr, alloc) = w.into_raw_with_allocator();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = unsafe { Weak::from_raw_in(ptr, alloc) };
+        assert_eq!(Arc::weak_count(&a), 1);
+        assert!(w.upgrade().is_some());
+    }
+
+    #[kani::proof_for_contract(Arc::<u32>::get_mut_unchecked)]
+    fn check_pfc_get_mut_unchecked_u32() {
+        let v: u32 = kani::any();
+        let mut a = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let m = unsafe { Arc::get_mut_unchecked(&mut a) };
+        let w = v.wrapping_add(1);
+        *m = w;
+        assert_eq!(*a, w);
+    }
+
+    // Unsized instantiations: fat pointers route the contract predicates
+    // through their metadata arms (checked_size_of_raw, data_offset on
+    // align_of_val_raw), which sized targets never exercise.
+
+    #[kani::proof_for_contract(Arc::<[u8]>::from_raw)]
+    fn check_pfc_from_raw_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { Arc::from_raw(ptr) };
+        assert_eq!(a.len(), 3);
+        assert_eq!(a[0], arr[0]);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof_for_contract(Arc::<[u8], Global>::from_raw_in)]
+    fn check_pfc_from_raw_in_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let (ptr, alloc) = Arc::into_raw_with_allocator(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { Arc::from_raw_in(ptr, alloc) };
+        assert_eq!(a.len(), 3);
+        assert_eq!(a[2], arr[2]);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof_for_contract(Arc::<[u8]>::increment_strong_count)]
+    fn check_pfc_increment_strong_count_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::increment_strong_count(ptr) };
+        let a = unsafe { Arc::from_raw(ptr) };
+        assert_eq!(Arc::strong_count(&a), 2);
+        unsafe { Arc::decrement_strong_count(ptr) };
+    }
+
+    #[kani::proof_for_contract(Arc::<[u8]>::decrement_strong_count)]
+    fn check_pfc_decrement_strong_count_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let b = Arc::clone(&a);
+        let ptr = Arc::into_raw(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::decrement_strong_count(ptr) };
+        assert_eq!(Arc::strong_count(&b), 1);
+        assert_eq!(b[1], arr[1]);
+    }
+
+    #[kani::proof_for_contract(Arc::<[u8], Global>::increment_strong_count_in)]
+    fn check_pfc_increment_strong_count_in_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let (ptr, _alloc) = Arc::into_raw_with_allocator(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::increment_strong_count_in(ptr, Global) };
+        let a = unsafe { Arc::from_raw(ptr) };
+        assert_eq!(Arc::strong_count(&a), 2);
+        unsafe { Arc::decrement_strong_count(ptr) };
+    }
+
+    #[kani::proof_for_contract(Arc::<[u8], Global>::decrement_strong_count_in)]
+    fn check_pfc_decrement_strong_count_in_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let b = Arc::clone(&a);
+        let (ptr, _alloc) = Arc::into_raw_with_allocator(a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        unsafe { Arc::decrement_strong_count_in(ptr, Global) };
+        assert_eq!(Arc::strong_count(&b), 1);
+        assert_eq!(b[0], arr[0]);
+    }
+
+    #[kani::proof_for_contract(Arc::<[u8]>::get_mut_unchecked)]
+    fn check_pfc_get_mut_unchecked_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let mut a: Arc<[u8]> = Arc::from(&arr[..]);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let m = unsafe { Arc::get_mut_unchecked(&mut a) };
+        m[0] = m[0].wrapping_add(1);
+        assert_eq!(a[0], arr[0].wrapping_add(1));
+        assert_eq!(a.len(), 3);
+    }
+
+    #[kani::proof_for_contract(Weak::<[u8]>::from_raw)]
+    fn check_pfc_weak_from_raw_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let w = Arc::downgrade(&a);
+        let ptr = w.into_raw();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = unsafe { Weak::from_raw(ptr) };
+        assert_eq!(Arc::weak_count(&a), 1);
+        let up = w.upgrade();
+        assert!(up.is_some());
+        assert_eq!(up.unwrap()[0], arr[0]);
+    }
+
+    #[kani::proof_for_contract(Weak::<[u8], Global>::from_raw_in)]
+    fn check_pfc_weak_from_raw_in_slice_u8() {
+        let arr: [u8; 3] = kani::any();
+        let a: Arc<[u8]> = Arc::from(&arr[..]);
+        let w = Arc::downgrade(&a);
+        let (ptr, alloc) = w.into_raw_with_allocator();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = unsafe { Weak::from_raw_in(ptr, alloc) };
+        assert_eq!(Arc::weak_count(&a), 1);
+        assert!(w.upgrade().is_some());
+    }
+
+    #[kani::proof_for_contract(Arc::<dyn Any + Send + Sync, Global>::downcast_unchecked::<u32>)]
+    fn check_pfc_downcast_unchecked_u32() {
+        let v: u32 = kani::any();
+        let a: Arc<dyn Any + Send + Sync> = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let d: Arc<u32> = unsafe { a.downcast_unchecked::<u32>() };
+        assert_eq!(*d, v);
+        assert_eq!(Arc::strong_count(&d), 1);
+    }
+
+    // Refcount machines exercise count logic, not payload bytes: two widths.
+    macro_rules! arc_check_new_clone_drop {
+        ($ty:ty, $name:ident) => {
+            #[kani::proof]
+            fn $name() {
+                let v: $ty = kani::any();
+                let a = Arc::new(v);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                assert_eq!(Arc::strong_count(&a), 1);
+                let b = Arc::clone(&a);
+                assert_eq!(Arc::strong_count(&a), 2);
+                assert_eq!(*b, v);
+                drop(b);
+                assert_eq!(Arc::strong_count(&a), 1);
+                assert_eq!(*a, v);
+            }
+        };
+    }
+    arc_check_new_clone_drop!(u8, check_new_clone_drop_u8);
+    arc_check_new_clone_drop!(u32, check_new_clone_drop_u32);
+
+    macro_rules! arc_check_try_new {
+        ($ty:ty, $name:ident) => {
+            #[kani::proof]
+            fn $name() {
+                let v: $ty = kani::any();
+                let r = Arc::try_new(v);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                // Kani models Global allocation as succeeding; the Err arm is
+                // unreachable in-model, so no cover is placed on it.
+                let a = r.unwrap();
+                assert_eq!(*a, v);
+                assert_eq!(Arc::strong_count(&a), 1);
+            }
+        };
+    }
+    arc_check_try_new!(u8, check_try_new_u8);
+    arc_check_try_new!(u32, check_try_new_u32);
+
+    macro_rules! arc_check_new_uninit {
+        ($ty:ty, $name:ident) => {
+            #[kani::proof]
+            fn $name() {
+                let v: $ty = kani::any();
+                let mut u = Arc::<$ty>::new_uninit();
+                Arc::get_mut(&mut u).unwrap().write(v);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                let a = unsafe { u.assume_init() };
+                assert_eq!(*a, v);
+            }
+        };
+    }
+    arc_check_new_uninit!(u8, check_new_uninit_u8);
+    arc_check_new_uninit!(u32, check_new_uninit_u32);
+
+    macro_rules! arc_check_new_zeroed {
+        ($ty:ty, $name:ident) => {
+            #[kani::proof]
+            fn $name() {
+                let u = Arc::<$ty>::new_zeroed();
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                let a = unsafe { u.assume_init() };
+                assert_eq!(*a, 0 as $ty);
+            }
+        };
+    }
+    arc_check_new_zeroed!(u8, check_new_zeroed_u8);
+    arc_check_new_zeroed!(u32, check_new_zeroed_u32);
+
+    // Allocator-parameterized wrappers delegate to the fns above with `alloc`
+    // threaded through (Global per the challenge waiver): one width each.
+    #[kani::proof]
+    fn check_new_in_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_in(v, Global);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof]
+    fn check_new_uninit_in_u32() {
+        let v: u32 = kani::any();
+        let mut u = Arc::<u32>::new_uninit_in(Global);
+        Arc::get_mut(&mut u).unwrap().write(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { u.assume_init() };
+        assert_eq!(*a, v);
+    }
+
+    #[kani::proof]
+    fn check_new_zeroed_in_u32() {
+        let u = Arc::<u32>::new_zeroed_in(Global);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { u.assume_init() };
+        assert_eq!(*a, 0);
+    }
+
+    #[kani::proof]
+    fn check_try_new_in_u32() {
+        let v: u32 = kani::any();
+        let r = Arc::try_new_in(v, Global);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = r.unwrap();
+        assert_eq!(*a, v);
+    }
+
+    #[kani::proof]
+    fn check_try_new_uninit_u32() {
+        let v: u32 = kani::any();
+        let mut u = Arc::<u32>::try_new_uninit().unwrap();
+        Arc::get_mut(&mut u).unwrap().write(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { u.assume_init() };
+        assert_eq!(*a, v);
+    }
+
+    #[kani::proof]
+    fn check_try_new_zeroed_u32() {
+        let u = Arc::<u32>::try_new_zeroed().unwrap();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { u.assume_init() };
+        assert_eq!(*a, 0);
+    }
+
+    #[kani::proof]
+    fn check_try_new_uninit_in_u32() {
+        let v: u32 = kani::any();
+        let mut u = Arc::<u32>::try_new_uninit_in(Global).unwrap();
+        Arc::get_mut(&mut u).unwrap().write(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { u.assume_init() };
+        assert_eq!(*a, v);
+    }
+
+    #[kani::proof]
+    fn check_try_new_zeroed_in_u32() {
+        let u = Arc::<u32>::try_new_zeroed_in(Global).unwrap();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = unsafe { u.assume_init() };
+        assert_eq!(*a, 0);
+    }
+
+    #[kani::proof]
+    fn check_pin_u32() {
+        let v: u32 = kani::any();
+        let p = Arc::pin(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*p, v);
+    }
+
+    #[kani::proof]
+    fn check_try_pin_u32() {
+        let v: u32 = kani::any();
+        let p = Arc::try_pin(v).unwrap();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*p, v);
+    }
+
+    #[kani::proof]
+    fn check_pin_in_u32() {
+        let v: u32 = kani::any();
+        let p = Arc::pin_in(v, Global);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*p, v);
+    }
+
+    #[kani::proof]
+    fn check_try_pin_in_u32() {
+        let v: u32 = kani::any();
+        let p = Arc::try_pin_in(v, Global).unwrap();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*p, v);
+    }
+
+    // Slice families move payload bytes; the per-element write loop's cost
+    // scales with total bytes, so widths carry byte-budgeted len bounds.
+    macro_rules! arc_check_new_uninit_slice {
+        ($ty:ty, $cap:literal, $unwind:literal, $name:ident) => {
+            #[kani::proof]
+            #[kani::unwind($unwind)]
+            fn $name() {
+                let len: usize = kani::any();
+                // u8 cap 20: ~40s solve. Cap 100 exceeds CI's addressed-object
+                // ceiling for this per-element write shape (2^12 at CI's fixed
+                // --object-bits 12) — measured. Wider elements shrink the cap
+                // further (the wide-slice memory class, measured on Rc and Arc).
+                kani::assume(len <= $cap);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                let mut u: Arc<[mem::MaybeUninit<$ty>]> = Arc::new_uninit_slice(len);
+                for elem in Arc::get_mut(&mut u).unwrap().iter_mut() {
+                    elem.write(kani::any::<$ty>());
+                }
+                let a: Arc<[$ty]> = unsafe { u.assume_init() };
+                assert_eq!(a.len(), len);
+            }
+        };
+    }
+    arc_check_new_uninit_slice!(u8, 20, 21, check_new_uninit_slice_u8);
+    arc_check_new_uninit_slice!(u32, 8, 9, check_new_uninit_slice_u32);
+
+    macro_rules! arc_check_new_zeroed_slice {
+        ($ty:ty, $cap:literal, $unwind:literal, $name:ident) => {
+            #[kani::proof]
+            #[kani::unwind($unwind)]
+            fn $name() {
+                let len: usize = kani::any();
+                // Same byte-budgeted caps as the uninit-slice family above.
+                kani::assume(len <= $cap);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                let u: Arc<[mem::MaybeUninit<$ty>]> = Arc::new_zeroed_slice(len);
+                let a: Arc<[$ty]> = unsafe { u.assume_init() };
+                assert_eq!(a.len(), len);
+                assert!(a.iter().all(|&x| x == 0 as $ty));
+            }
+        };
+    }
+    arc_check_new_zeroed_slice!(u8, 20, 21, check_new_zeroed_slice_u8);
+    arc_check_new_zeroed_slice!(u32, 8, 9, check_new_zeroed_slice_u32);
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn check_new_uninit_slice_in_u32() {
+        let len: usize = kani::any();
+        // u32 cap from the slice families' byte budget.
+        kani::assume(len <= 8);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let mut u: Arc<[mem::MaybeUninit<u32>], Global> = Arc::new_uninit_slice_in(len, Global);
+        for elem in Arc::get_mut(&mut u).unwrap().iter_mut() {
+            elem.write(kani::any::<u32>());
+        }
+        let a: Arc<[u32], Global> = unsafe { u.assume_init() };
+        assert_eq!(a.len(), len);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn check_new_zeroed_slice_in_u32() {
+        let len: usize = kani::any();
+        // u32 cap from the slice families' byte budget.
+        kani::assume(len <= 8);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let u: Arc<[mem::MaybeUninit<u32>], Global> = Arc::new_zeroed_slice_in(len, Global);
+        let a: Arc<[u32], Global> = unsafe { u.assume_init() };
+        assert_eq!(a.len(), len);
+        assert!(a.iter().all(|&x| x == 0));
+    }
+
+    #[kani::proof]
+    fn check_new_cyclic_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_cyclic(|w| {
+            // The documented mid-construction state: upgrade fails while the
+            // value is not yet built.
+            assert!(w.upgrade().is_none());
+            v
+        });
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+        assert_eq!(Arc::weak_count(&a), 0);
+    }
+
+    #[kani::proof]
+    fn check_new_cyclic_in_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_cyclic_in(
+            |w| {
+                assert!(w.upgrade().is_none());
+                v
+            },
+            Global,
+        );
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+        assert_eq!(Arc::weak_count(&a), 0);
+    }
+
+    #[kani::proof]
+    fn check_into_raw_with_allocator_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_in(v, Global);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let (ptr, alloc) = Arc::into_raw_with_allocator(a);
+        let a = unsafe { Arc::from_raw_in(ptr, alloc) };
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof]
+    fn check_as_ptr_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let p = Arc::as_ptr(&a);
+        assert_eq!(unsafe { *p }, v);
+        assert!(ptr::addr_eq(p, &raw const *a));
+    }
+
+    #[kani::proof]
+    fn check_default_u32() {
+        let a: Arc<u32> = Arc::default();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(*a, u32::default());
+    }
+
+    // `Default for Arc<str>` carries no harness at this Kani pin: through the
+    // `ArcInner<[u8]>` -> `ArcInner<str>` rewrap inside it, Kani reports the
+    // shared static's clone-overflow guard (and, when the handle drops, the
+    // static-drop debug_assert) as reachable. The claim is input-independent
+    // and persists with the handle leaked, while the identical static path
+    // without the rewrap verifies green (`check_default_slice_u8`,
+    // `check_default_cstr`). Details in the PR description.
+
+    #[kani::proof]
+    fn check_default_cstr() {
+        let a: Arc<core::ffi::CStr> = Arc::default();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert!(a.is_empty());
+    }
+
+    #[kani::proof]
+    fn check_default_slice_u32() {
+        let a: Arc<[u32]> = Arc::default();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert!(a.is_empty());
+    }
+
+    #[kani::proof]
+    fn check_default_slice_u8() {
+        let a: Arc<[u8]> = Arc::default();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert!(a.is_empty());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn check_from_str() {
+        let bytes: [u8; 4] = kani::any();
+        for b in &bytes {
+            // ASCII keeps the bytes valid UTF-8 while the content stays symbolic.
+            kani::assume(*b < 0x80);
+        }
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let s = core::str::from_utf8(&bytes).unwrap();
+        let a: Arc<str> = Arc::from(s);
+        assert_eq!(&*a, s);
+        assert_eq!(a.len(), 4);
+    }
+
+    macro_rules! arc_check_from_vec {
+        ($ty:ty, $name:ident) => {
+            #[kani::proof]
+            #[kani::unwind(5)]
+            fn $name() {
+                let arr: [$ty; 4] = kani::any();
+                let v = Vec::from(arr);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                let a: Arc<[$ty]> = Arc::from(v);
+                assert_eq!(a.len(), 4);
+                assert_eq!(a[0], arr[0]);
+                assert_eq!(a[3], arr[3]);
+            }
+        };
+    }
+    arc_check_from_vec!(u8, check_from_vec_u8);
+    arc_check_from_vec!(u32, check_from_vec_u32);
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn check_from_arc_str_to_bytes() {
+        let bytes: [u8; 4] = kani::any();
+        for b in &bytes {
+            // ASCII keeps the bytes valid UTF-8 while the content stays symbolic.
+            kani::assume(*b < 0x80);
+        }
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let s: Arc<str> = Arc::from(core::str::from_utf8(&bytes).unwrap());
+        let b: Arc<[u8]> = Arc::from(s);
+        assert_eq!(&*b, &bytes);
+    }
+
+    #[kani::proof]
+    fn check_from_box_u32() {
+        let v: u32 = kani::any();
+        let bx = Box::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a: Arc<u32> = Arc::from(bx);
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    macro_rules! arc_check_from_ref_slice {
+        ($ty:ty, $name:ident) => {
+            #[kani::proof]
+            #[kani::unwind(5)]
+            fn $name() {
+                let arr: [$ty; 4] = kani::any();
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                let a: Arc<[$ty]> = Arc::from(&arr[..]);
+                assert_eq!(a.len(), 4);
+                assert_eq!(a[0], arr[0]);
+                assert_eq!(a[3], arr[3]);
+            }
+        };
+    }
+    arc_check_from_ref_slice!(u8, check_from_ref_slice_u8);
+    arc_check_from_ref_slice!(u32, check_from_ref_slice_u32);
+
+    /// Manual Clone keeps this off the `TrivialClone` specialization, so slice
+    /// conversions take `ArcFromSlice`'s clone-per-element default path.
+    #[derive(PartialEq, Eq, Debug)]
+    struct NonTrivialClone(u8);
+    impl Clone for NonTrivialClone {
+        fn clone(&self) -> Self {
+            NonTrivialClone(self.0)
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn check_from_slice_clone_u8() {
+        let arr = [
+            NonTrivialClone(kani::any()),
+            NonTrivialClone(kani::any()),
+            NonTrivialClone(kani::any()),
+        ];
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a: Arc<[NonTrivialClone]> = Arc::from(&arr[..]);
+        assert_eq!(a.len(), 3);
+        assert_eq!(a[0], arr[0]);
+        assert_eq!(a[2], arr[2]);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn check_to_arc_slice_trusted_len_u32() {
+        let arr: [u32; 4] = kani::any();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        // Array IntoIter is TrustedLen: the exact-size specialization.
+        let a: Arc<[u32]> = arr.into_iter().collect();
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[0], arr[0]);
+        assert_eq!(a[3], arr[3]);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn check_to_arc_slice_default_u32() {
+        let arr: [u32; 4] = kani::any();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        // `filter` drops TrustedLen: the unknown-length default path.
+        let a: Arc<[u32]> = arr.into_iter().filter(|_| true).collect();
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[0], arr[0]);
+    }
+
+    // get_mut's None arm is constructed with a second strong handle. The
+    // weak-caused None arm is not assertable at this Kani pin: with a live
+    // Weak, `is_unique`'s weak-lock compare-exchange phantom-succeeds
+    // (kani#4537, fixed by kani#4542 after the pin), and the model lets
+    // `get_mut` return `Some` against the documented behavior.
+    macro_rules! arc_check_get_mut {
+        ($ty:ty, $name:ident) => {
+            #[kani::proof]
+            fn $name() {
+                let v: $ty = kani::any();
+                let mut a = Arc::new(v);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                match Arc::get_mut(&mut a) {
+                    Some(m) => {
+                        *m = m.wrapping_add(1);
+                        kani::cover(true, "get_mut Some arm reached");
+                    }
+                    None => unreachable!(),
+                }
+                let b = Arc::clone(&a);
+                assert!(Arc::get_mut(&mut a).is_none());
+                kani::cover(true, "get_mut None arm reached");
+                drop(b);
+                assert_eq!(*a, v.wrapping_add(1));
+            }
+        };
+    }
+    arc_check_get_mut!(u8, check_get_mut_both_arms_u8);
+    arc_check_get_mut!(u32, check_get_mut_both_arms_u32);
+
+    macro_rules! arc_check_downgrade_upgrade {
+        ($ty:ty, $name:ident) => {
+            // The CAS retry loops in downgrade and upgrade exit on the first
+            // iteration under Kani's sequential model; unwind(3) leaves slack
+            // and the unwinding assertion proves the bound complete.
+            #[kani::proof]
+            #[kani::unwind(3)]
+            fn $name() {
+                let v: $ty = kani::any();
+                let a = Arc::new(v);
+                kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+                let w = Arc::downgrade(&a);
+                assert_eq!(Arc::weak_count(&a), 1);
+                let up = w.upgrade();
+                assert!(up.is_some());
+                let b = up.unwrap();
+                assert_eq!(*b, v);
+                assert_eq!(Arc::strong_count(&a), 2);
+            }
+        };
+    }
+    arc_check_downgrade_upgrade!(u8, check_downgrade_upgrade_u8);
+    arc_check_downgrade_upgrade!(u32, check_downgrade_upgrade_u32);
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn check_weak_upgrade_dead_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = Arc::downgrade(&a);
+        drop(a);
+        assert!(w.upgrade().is_none());
+        assert_eq!(w.strong_count(), 0);
+    }
+
+    #[kani::proof]
+    fn check_weak_new_dangling_u32() {
+        let w: Weak<u32> = Weak::new();
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert!(w.upgrade().is_none());
+        assert_eq!(w.strong_count(), 0);
+    }
+
+    #[kani::proof]
+    fn check_weak_as_ptr_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        let w = Arc::downgrade(&a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert!(ptr::addr_eq(w.as_ptr(), Arc::as_ptr(&a)));
+        assert_eq!(unsafe { *w.as_ptr() }, v);
+    }
+
+    #[kani::proof]
+    fn check_weak_into_raw_with_allocator_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new_in(v, Global);
+        let w = Arc::downgrade(&a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let (ptr, alloc) = w.into_raw_with_allocator();
+        assert!(ptr::addr_eq(ptr, Arc::as_ptr(&a)));
+        let w = unsafe { Weak::from_raw_in(ptr, alloc) };
+        assert_eq!(Arc::weak_count(&a), 1);
+        drop(w);
+        assert_eq!(Arc::weak_count(&a), 0);
+    }
+
+    #[kani::proof]
+    fn check_try_unwrap_unique_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let got = Arc::try_unwrap(a);
+        kani::cover(true, "try_unwrap Ok arm reached");
+        assert_eq!(got.unwrap(), v);
+    }
+
+    // `try_unwrap` on a two-handle Arc carries no shared-arm harness: this
+    // repo's Kani pin predates the kani#4542 fix for kani#4537 (compare-and-
+    // exchange modeled as always succeeding), so the CAS `1 -> 0` "succeeds"
+    // with the count at 2 and the documented Err outcome is unprovable. The
+    // same CAS opens `make_mut`; see `check_make_mut_shared_u8`. A
+    // two-handle `Arc::try_unwrap` is the minimal reproducer.
+
+    #[kani::proof]
+    fn check_into_inner_u32() {
+        let v: u32 = kani::any();
+        let a = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        assert_eq!(Arc::into_inner(a), Some(v));
+        kani::cover(true, "into_inner Some arm reached");
+        let a = Arc::new(v);
+        let b = Arc::clone(&a);
+        // The losing caller observes None while another handle survives.
+        assert_eq!(Arc::into_inner(a), None);
+        kani::cover(true, "into_inner None arm reached");
+        assert_eq!(*b, v);
+        assert_eq!(Arc::strong_count(&b), 1);
+    }
+
+    #[kani::proof]
+    fn check_downcast_u32() {
+        let v: u32 = kani::any();
+        let a: Arc<dyn Any + Send + Sync> = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let a = match a.downcast::<i64>() {
+            Ok(_) => unreachable!(),
+            Err(orig) => {
+                kani::cover(true, "downcast Err arm returns the original");
+                orig
+            }
+        };
+        match a.downcast::<u32>() {
+            Ok(d) => {
+                kani::cover(true, "downcast Ok arm reached");
+                assert_eq!(*d, v);
+                assert_eq!(Arc::strong_count(&d), 1);
+            }
+            Err(_) => unreachable!(),
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn check_into_array_u32() {
+        let len: usize = kani::any();
+        // Both arms need only len == 2 vs len != 2; 4 leaves margin cheaply.
+        kani::assume(len <= 4);
+        let mut v: Vec<u32> = Vec::new();
+        for _ in 0..len {
+            v.push(kani::any());
+        }
+        let a: Arc<[u32]> = Arc::from(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let first = if len > 0 { Some(a[0]) } else { None };
+        match a.into_array::<2>() {
+            Some(arr) => {
+                kani::cover(true, "into_array Some arm reached");
+                assert_eq!(len, 2);
+                assert_eq!(arr[0], first.unwrap());
+            }
+            None => {
+                kani::cover(true, "into_array None arm reached");
+                assert_ne!(len, 2);
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn check_try_from_slice_to_array_u32() {
+        let len: usize = kani::any();
+        // Both arms need only len == 2 vs len != 2; 4 leaves margin cheaply.
+        kani::assume(len <= 4);
+        let mut v: Vec<u32> = Vec::new();
+        for _ in 0..len {
+            v.push(kani::any());
+        }
+        let a: Arc<[u32]> = Arc::from(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let first = if len > 0 { Some(a[0]) } else { None };
+        match <Arc<[u32; 2]>>::try_from(a) {
+            Ok(arr) => {
+                kani::cover(true, "try_from Ok arm reached");
+                assert_eq!(len, 2);
+                assert_eq!(arr[0], first.unwrap());
+            }
+            Err(rest) => {
+                kani::cover(true, "try_from Err arm returns the original");
+                assert_eq!(rest.len(), len);
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn check_make_mut_unique_u32() {
+        let v: u32 = kani::any();
+        let mut a = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        *Arc::make_mut(&mut a) = v.wrapping_add(1);
+        kani::cover(true, "make_mut unique arm reached");
+        assert_eq!(*a, v.wrapping_add(1));
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof]
+    fn check_make_mut_shared_u8() {
+        let v: u8 = kani::any();
+        let mut a = Arc::new(v);
+        let b = Arc::clone(&a);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        // Shared-state make_mut: exercised without asserts, handles leaked.
+        // This repo's Kani pin predates the kani#4542 fix for kani#4537
+        // (compare-and-exchange modeled as always succeeding), so the
+        // `compare_exchange(1, 0, ..)` that routes make_mut "succeeds" here
+        // despite the count being 2: the model never enters the clone arm
+        // (a panicking-Clone probe encounters no panic), and the post-call
+        // heap state is unreliable — asserts fail input-independently and
+        // normal drops report a deref of a deallocated object, while the
+        // byte-parallel Rc harness (Cell counts, no CAS) verifies green.
+        // Asserts or drops here would report that pin behavior, not Arc.
+        *Arc::make_mut(&mut a) = v.wrapping_add(1);
+        kani::cover(true, "make_mut on a two-handle Arc returned");
+        mem::forget(a);
+        mem::forget(b);
+    }
+
+    #[kani::proof]
+    fn check_make_mut_weak_disassoc_u32() {
+        let v: u32 = kani::any();
+        let mut a = Arc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = Arc::downgrade(&a);
+        // strong == 1 with weak > 0: the value moves and the weak is left dead.
+        *Arc::make_mut(&mut a) = v.wrapping_add(1);
+        kani::cover(true, "make_mut weak-disassociation arm reached");
+        assert!(w.upgrade().is_none());
+        assert_eq!(*a, v.wrapping_add(1));
+    }
+
+    #[kani::proof]
+    fn check_unique_arc_into_arc_u32() {
+        let v: u32 = kani::any();
+        let mut u = UniqueArc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        // DerefMut writes through before the handle becomes shared.
+        *u = v.wrapping_add(1);
+        assert_eq!(*u, v.wrapping_add(1));
+        let a = UniqueArc::into_arc(u);
+        assert_eq!(*a, v.wrapping_add(1));
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn check_unique_arc_downgrade_u32() {
+        let v: u32 = kani::any();
+        let u = UniqueArc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = UniqueArc::downgrade(&u);
+        // Documented: the weak cannot upgrade until the UniqueArc converts.
+        assert!(w.upgrade().is_none());
+        let a = UniqueArc::into_arc(u);
+        let up = w.upgrade();
+        assert!(up.is_some());
+        assert_eq!(*up.unwrap(), v);
+        assert_eq!(*a, v);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn check_unique_arc_drop_u32() {
+        let v: u32 = kani::any();
+        let u = UniqueArc::new(v);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = UniqueArc::downgrade(&u);
+        drop(u);
+        // Dropped without conversion: the weak stays dead.
+        assert!(w.upgrade().is_none());
+        drop(w);
+    }
+
+    // Overflow-guard pairs: each counter guard in the file gets a should_panic
+    // harness driving its count past MAX_REFCOUNT (corrupted handles leaked —
+    // the counts are deliberately wrong, so drops must not run).
+
+    #[kani::proof]
+    #[kani::should_panic]
+    fn check_clone_overflow_guard_u8() {
+        let a = Arc::new(0u8);
+        a.inner().strong.store(MAX_REFCOUNT + 1, Relaxed);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let b = Arc::clone(&a);
+        mem::forget(b);
+        mem::forget(a);
+    }
+
+    #[kani::proof]
+    #[kani::should_panic]
+    fn check_weak_clone_overflow_guard_u32() {
+        let a = Arc::new(0u32);
+        let w = Arc::downgrade(&a);
+        a.inner().weak.store(MAX_REFCOUNT + 1, Relaxed);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w2 = w.clone();
+        mem::forget(w2);
+        mem::forget(w);
+        mem::forget(a);
+    }
+
+    #[kani::proof]
+    #[kani::should_panic]
+    #[kani::unwind(3)]
+    fn check_downgrade_overflow_guard_u32() {
+        let a = Arc::new(0u32);
+        // Past MAX_REFCOUNT but not the usize::MAX lock sentinel: the loop's
+        // overflow assert fires rather than the spin arm.
+        a.inner().weak.store(MAX_REFCOUNT + 1, Relaxed);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = Arc::downgrade(&a);
+        mem::forget(w);
+        mem::forget(a);
+    }
+
+    #[kani::proof]
+    #[kani::should_panic]
+    #[kani::unwind(3)]
+    fn check_upgrade_overflow_guard_u32() {
+        let a = Arc::new(0u32);
+        let w = Arc::downgrade(&a);
+        a.inner().strong.store(MAX_REFCOUNT + 1, Relaxed);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let up = w.upgrade();
+        mem::forget(up);
+        mem::forget(w);
+        mem::forget(a);
+    }
+
+    #[kani::proof]
+    #[kani::should_panic]
+    fn check_unique_arc_downgrade_overflow_guard_u32() {
+        let u = UniqueArc::new(0u32);
+        unsafe { (*u.ptr.as_ptr()).weak.store(MAX_REFCOUNT + 1, Relaxed) };
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let w = UniqueArc::downgrade(&u);
+        mem::forget(w);
+        mem::forget(u);
+    }
+
+    // `UniqueArcUninit`'s only in-tree caller is make_mut's clone arm, which
+    // is unreachable in the model at this Kani pin (kani#4537: the routing
+    // compare-and-exchange always succeeds — a panicking-Clone probe reports
+    // "encountered no panics"). The two harnesses below construct it directly
+    // instead, which never touches that compare-and-exchange.
+
+    #[kani::proof]
+    fn check_unique_arc_uninit_new_into_arc_u32() {
+        let template: u32 = kani::any();
+        let mut u = UniqueArcUninit::new(&template, Global);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        let v: u32 = kani::any();
+        unsafe { u.data_ptr().write(v) };
+        let a: Arc<u32> = unsafe { u.into_arc() };
+        assert_eq!(*a, v);
+        assert_eq!(Arc::strong_count(&a), 1);
+    }
+
+    #[kani::proof]
+    fn check_unique_arc_uninit_drop_u32() {
+        let template: u32 = kani::any();
+        let u = UniqueArcUninit::new(&template, Global);
+        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
+        // Dropped before initialization completes: the guard's Drop
+        // deallocates without dropping a value.
+        drop(u);
     }
 }
