@@ -1521,7 +1521,7 @@ impl<T: ?Sized> Rc<T> {
                 && kani::mem::checked_size_of_raw(ptr)
                     == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                 && kani::mem::checked_align_of_raw(ptr)
-                    == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                    == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
                 && unsafe { (*strong_ptr).get() >= 1 }
         })]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
@@ -1593,7 +1593,7 @@ impl<T: ?Sized> Rc<T> {
                 && kani::mem::checked_size_of_raw(ptr)
                     == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                 && kani::mem::checked_align_of_raw(ptr)
-                    == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                    == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
                 && unsafe { (*strong_ptr).get() >= 1 }
         })]
     // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
@@ -1648,7 +1648,7 @@ impl<T: ?Sized> Rc<T> {
                 && kani::mem::checked_size_of_raw(ptr)
                     == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                 && kani::mem::checked_align_of_raw(ptr)
-                    == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                    == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
                 && unsafe { (*strong_ptr).get() >= 1 }
         })]
     // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
@@ -1806,7 +1806,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
                 && kani::mem::checked_size_of_raw(ptr)
                     == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                 && kani::mem::checked_align_of_raw(ptr)
-                    == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                    == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
                 && unsafe { (*strong_ptr).get() >= 1 }
         })]
     #[ensures(|result: &Self| {
@@ -1930,7 +1930,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
                 && kani::mem::checked_size_of_raw(ptr)
                     == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                 && kani::mem::checked_align_of_raw(ptr)
-                    == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                    == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
                 && unsafe { (*strong_ptr).get() >= 1 }
         })]
     // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
@@ -1994,7 +1994,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
                 && kani::mem::checked_size_of_raw(ptr)
                     == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                 && kani::mem::checked_align_of_raw(ptr)
-                    == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                    == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
                 && unsafe { (*strong_ptr).get() >= 1 }
         })]
     // `kani::modifies` has no safety-crate wrapper; requires/ensures use the safety forms.
@@ -3452,7 +3452,7 @@ impl<T: ?Sized> Weak<T> {
                     && kani::mem::checked_size_of_raw(ptr)
                         == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                     && kani::mem::checked_align_of_raw(ptr)
-                        == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                        == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
             }
         })]
     #[requires({
@@ -3661,7 +3661,7 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
                     && kani::mem::checked_size_of_raw(ptr)
                         == Some(unsafe { mem::size_of_val_raw(rebuilt_ptr) })
                     && kani::mem::checked_align_of_raw(ptr)
-                        == Some(unsafe { align_of_val_raw(rebuilt_ptr) })
+                        == Some(unsafe { mem::align_of_val_raw(rebuilt_ptr) })
                     && kani::mem::can_dereference(strong_ptr)
                     && kani::mem::can_dereference(weak_ptr)
                     && unsafe { (*weak_ptr).get() > 0 }
