@@ -3606,3 +3606,43 @@ impl From<char> for String {
         c.to_string()
     }
 }
+
+#[cfg(kani)]
+mod verify {
+    use super::*;
+    use core::kani;
+
+    // Symbolic-size constructor — for the GENUINELY-UNBOUNDED rows only.
+    // All-NUL bytes are valid UTF-8, so this is a valid String of symbolic
+    // length backed by ONE symbolic-sized allocation (fits object-bits 12).
+    // The length bound keeps reserve()'s amortized doubling below the
+    // address-space limit; above it String correctly panics
+    // capacity_overflow (controlled, not UB).
+    fn any_ascii_string(len: usize) -> String {
+        kani::assume(len <= isize::MAX as usize / 2 - 8);
+        unsafe { String::from_utf8_unchecked(crate::vec![0u8; len]) }
+    }
+
+    #[kani::proof]
+    fn check_insert_str_unbounded() {
+        let len: usize = kani::any();
+        let mut s = any_ascii_string(len);
+        let idx: usize = kani::any();
+        kani::assume(idx <= s.len()); // all-NUL: every index is a char boundary
+        kani::cover(len > 0 && idx > 0 && idx < len, "interior insert into non-empty");
+        let before = s.len();
+        s.insert_str(idx, "ab");
+        assert_eq!(s.len(), before + 2);
+    }
+
+    #[kani::proof]
+    fn check_split_off_unbounded() {
+        let len: usize = kani::any();
+        let mut s = any_ascii_string(len);
+        let at: usize = kani::any();
+        kani::assume(at <= s.len());
+        kani::cover(len > 0 && at > 0 && at < len, "interior split of non-empty");
+        let tail = s.split_off(at);
+        assert_eq!(s.len() + tail.len(), len);
+    }
+}
