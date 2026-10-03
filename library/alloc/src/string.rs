@@ -3623,9 +3623,10 @@ mod verify {
     // - Unbounded (any length <= the ob12 memory-model limit MAX_ALLOC): insert_str,
     //   split_off, insert, pop, remove, drain, into_boxed_str, leak.
     // - Receiver-unbounded, bounded edit: replace_range (<= 2 bytes replaced).
-    // - Tool-limited bounded (disclosed residual): from_utf16{le,le_lossy,be,be_lossy} and
-    //   retain (decode-combinator / loop-contract walls: kani#4893, #4906, #4310, #4790);
-    //   remove_matches is note-only (CharSearcher memcmp wall, no runnable harness).
+    // - Tool-limited bounded (disclosed residual): from_utf16{le,le_lossy,be,be_lossy},
+    //   retain, and remove_matches (decode-combinator / searcher-scan / loop-contract walls:
+    //   kani#4893, #4906, #4310, #4790) — each verified over a bounded symbolic input, the
+    //   arbitrary-length obligation disclosed rather than skipped.
     //
     // Input model: receivers are content-degenerate (all-NUL) but structure-symbolic (length,
     // indices, ranges); content is symbolic where the function reads it (the planted char for
@@ -3896,13 +3897,23 @@ mod verify {
         assert!(s.len() <= before);
     }
 
-    // remove_matches: NOTE-ONLY disclosed residual (no runnable harness). The real
-    // CharSearcher char-verify compare (core::str::pattern) lowers to a memcmp CBMC cannot
-    // simplify to a constant, so it unwinds unboundedly regardless of haystack length
-    // (measured) -> any harness would exhaust CI. We disclose the real-searcher wall rather
-    // than over-approximate it with a synthetic searcher that never runs the std code.
-    // Tracked: model-checking/kani#4893 (combinator attach-site) + the CharSearcher-memcmp
-    // non-simplification (filed separately at submission).
+    // --- disclosed-bounded: `remove_matches` with the real `char` pattern exercises the std
+    // search + byte-shift path. The searcher scans the whole haystack, so (like retain /
+    // from_utf16) it is verified over a bounded symbolic string; the arbitrary-length haystack
+    // is the disclosed residual — the searcher's scan has no loop-contract attach site
+    // (model-checking/kani#4893), so at symbolic length its object count exceeds ob12. Lean vs
+    // #702: the real `char` pattern + a no-growth safety invariant, not a Cell-instrumented
+    // synthetic Searcher.
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn check_remove_matches() {
+        let mut s = any_valid_string::<3>();
+        let before = s.len();
+        let pat: char = kani::any();
+        s.remove_matches(pat);
+        kani::cover(s.len() < before, "some matches removed");
+        assert!(s.len() <= before); // remove_matches never grows the string; UTF-8 validity is the type invariant
+    }
 
     // --- should_panic: the documented char-boundary / out-of-range panics the harnesses
     // above exclude DO panic. Each uses the 2-byte char "é" (0xC3 0xA9): index 1 is in
