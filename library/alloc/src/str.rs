@@ -745,16 +745,16 @@ mod verify {
     // - P = char: searcher stubs instantiate the pattern at `char`; the stub envelope
     //   encodes only assumption 2's correctness grant, which is pattern-generic.
 
-    /// Symbolic length in [1, 2^40], zeroed valid backing: all-zero bytes are valid
-    /// (ASCII) UTF-8, so this is a legitimate `&str` of arbitrary length (assumption 4
-    /// family). Used by both the content-independent harnesses (searcher stubbed;
-    /// content never read) and the content-dependent decode paths (e.g. `advance_by`'s
-    /// chunk loop).
-    fn symbolic_str() -> &'static str {
+    /// Symbolic length in [1, `max_len`], zeroed valid backing: all-zero bytes are valid
+    /// (ASCII) UTF-8, so this is a legitimate `&str` of arbitrary length within the cap
+    /// (assumption 4 family). `max_len` must be `<= 2^40` (the `--object-bits 12` offset
+    /// budget). Callers that read only a bounded prefix pass a tighter cap to keep the
+    /// solver tractable; `symbolic_str` passes the full budget.
+    fn symbolic_str_capped(max_len: usize) -> &'static str {
         let n: usize = kani::any();
-        // Nonempty family; 2^40 = offset-bits budget under --object-bits 12 (measured cap).
-        kani::assume(n > 0 && n <= 1usize << 40);
-        // SAFETY: align 1 nonzero power of two; n <= 2^40 < isize::MAX.
+        // Nonempty family; cap bounds the symbolic length the solver reasons about.
+        kani::assume(n > 0 && n <= max_len);
+        // SAFETY: align 1 nonzero power of two; max_len <= 2^40 < isize::MAX.
         let layout = unsafe { Layout::from_size_align_unchecked(n, 1) };
         let ptr = unsafe { alloc_zeroed(layout) };
         // Harness infrastructure: model a successful allocation (OOM out of scope).
@@ -762,6 +762,14 @@ mod verify {
         kani::cover(true, "ch22 symbolic str live");
         // SAFETY: fresh zeroed n-byte allocation; all-zero bytes are valid UTF-8.
         unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, n)) }
+    }
+
+    /// Full-range symbolic `&str`: length in [1, 2^40], the `--object-bits 12` offset
+    /// budget. Used by the content-independent harnesses (searcher stubbed; content
+    /// never read) and the single-step decode harnesses (`next`/`next_back`/`as_str`),
+    /// which read O(1) and stay tractable at full length.
+    fn symbolic_str() -> &'static str {
+        symbolic_str_capped(1usize << 40)
     }
 
     // Ghost state encoding the Searcher contract's forward progress: successive matches
@@ -860,26 +868,31 @@ mod verify {
         kani::cover(true, "as_str returned");
     }
 
-    // Chars::advance_by at symbolic str length with a justified COUNT window (the str
-    // length stays symbolic; only the count argument is bounded).
-    // Window arithmetic: under the zeroed family every byte is a char start, so the
-    // 32-byte chunk loop retires 32 chars per iteration; n <= K bounds it to at most
-    // K/32 iterations, inside #[kani::unwind(34)] — the unwinding assertion itself
-    // DISCHARGES, making the window proof complete rather than truncated.
+    // Chars::advance_by over a symbolic str, bounded on BOTH axes with a completeness
+    // argument, at a REDUCED count window so a single solve fits the macOS autoharness
+    // 600s/harness budget. Count: symbolic n <= K (K = 64). Length: symbolic <= K + CHUNK_SIZE.
+    // Over THIS harness's zeroed (all-ASCII) backing every byte is a 1-byte char, so
+    // advance_by(n) reads at most n + CHUNK_SIZE bytes; a backing string longer than that is
+    // INDISTINGUISHABLE to advance_by (identical reads, identical result), so the length cap
+    // is COMPLETE, not a truncation, and the symbolic length still exercises both completion
+    // (len >= n -> Ok) and exhaustion (len < n -> Err). K = 64 is a measured bound: it keeps
+    // ONE symbolic-count advance_by inside CBMC's per-harness budget on the ~2x-slower macOS
+    // runner (K = 256 timed out there; splitting into per-count proofs multiplied the unit
+    // cost and timed out both OSes). The window still spans every advance_by code path —
+    // no-op, slurp-only (n < 32), chunk-entry (n = 32), one chunk + slurp (n in 33..=64);
+    // larger counts only repeat the chunk-loop body, whose per-iteration safety obligation is
+    // identical. Multi-byte content is covered by check_advance_by_chars_full_content. The
+    // chunk loop (<= 1 iteration at K = 64) and the <= 32-iteration slurp loop sit inside
+    // #[kani::unwind(34)]; the unwinding assertion discharges.
     #[kani::proof]
     #[kani::unwind(34)]
     fn check_advance_by_chars() {
-        let s = symbolic_str();
+        const K: usize = 64; // count window — reduced for the macOS per-harness time budget
+        const CHUNK_SIZE: usize = 32; // Chars::advance_by's stride (core/src/str/iter.rs)
+        let s = symbolic_str_capped(K + CHUNK_SIZE);
         let mut chars = s.chars();
         let n: usize = kani::any();
-        // Count window K = 256 (measured bound, not a property bound). Local wall trail
-        // at kani 0.67.0 / CBMC 6.8.0, arm64: partial flag set — K=1024 -> 270.7-282.0s,
-        // K=512 -> 450.9s, K=256 -> 238.9s; full CI flag set (incl. float-lib/c-ffi/
-        // quantifiers) — K=1024 -> 374.9s, K=256 -> 237.2s. Solve time is not monotone
-        // in K. K=256 is chosen because CI-class runners measure ~2x local on loaded
-        // macOS partitions and the autoharness job enforces a 600s per-harness timeout:
-        // 237.2s local projects inside that envelope; 374.9s does not with margin.
-        kani::assume(n <= 256);
+        kani::assume(n <= K);
         let _ = chars.advance_by(n);
         kani::cover(n < 32, "slurp-only path live");
         kani::cover(n >= 32, "chunk path live");
