@@ -3613,11 +3613,11 @@ mod verify {
 
     use super::*;
 
-    // Challenge-10 harnesses for the 15 `String` functions. One minimal sound harness per
-    // fn: genuine-unbounded where Kani reaches it, honest disclosed residual (mechanism note
-    // + tracking issue) where it does not, rather than an over-approximation. The shared
-    // symbolic-String technique (all-NUL buffer + planted char + MAX_ALLOC) follows the
-    // approach in model-checking/verify-rust-std#702.
+    // Challenge-10 harnesses for the 15 `String` functions. One sound harness per fn:
+    // genuine-unbounded where Kani reaches it, a disclosed bounded residual (mechanism note
+    // + tracking issue) where a tool limit prevents it. The shared symbolic-String technique
+    // (all-NUL buffer + planted char + MAX_ALLOC) keeps each receiver within a single CBMC
+    // object.
     //
     // Buckets:
     // - Unbounded (any length <= the ob12 memory-model limit MAX_ALLOC): insert_str,
@@ -3813,8 +3813,8 @@ mod verify {
     // --- disclosed-bounded: `decode_utf16(..).collect()` is a called iterator combinator
     // with no loop-contract attach site (model-checking/kani#4893); at symbolic length its
     // object count exceeds ob12. Verified over a bounded symbolic-content input (4 code
-    // units); the arbitrary-length obligation is tool-walled, not skipped. Lean vs #702:
-    // fixed even-length array, Ok/Err covers only (no alignment/odd-length cover suite).
+    // units); the arbitrary-length obligation is tool-walled, not skipped. Verified over a
+    // fixed even-length byte array with Ok/Err reachability covers.
 
     #[kani::proof]
     #[kani::unwind(7)]
@@ -3883,9 +3883,8 @@ mod verify {
     // --- disclosed-bounded: unbounded `retain` needs a loop contract on its real while-loop;
     // at this pin the content invariant hits measured walls — loop_modifies cannot name the
     // callee-temp locals (model-checking/kani#4906, #4790) and the quantifier form needs a
-    // non-constant range (model-checking/kani#4310). Verified bounded. Lean vs #702: a
-    // no-growth safety invariant (retain never grows; UTF-8 validity is the type invariant)
-    // instead of a Cell-tracked exact-length assertion.
+    // non-constant range (model-checking/kani#4310). Verified bounded, with a no-growth safety
+    // invariant (retain never grows the string; UTF-8 validity is the type invariant).
     #[kani::proof]
     #[kani::unwind(6)]
     fn check_retain() {
@@ -3901,9 +3900,8 @@ mod verify {
     // search + byte-shift path. The searcher scans the whole haystack, so (like retain /
     // from_utf16) it is verified over a bounded symbolic string; the arbitrary-length haystack
     // is the disclosed residual — the searcher's scan has no loop-contract attach site
-    // (model-checking/kani#4893), so at symbolic length its object count exceeds ob12. Lean vs
-    // #702: the real `char` pattern + a no-growth safety invariant, not a Cell-instrumented
-    // synthetic Searcher.
+    // (model-checking/kani#4893), so at symbolic length its object count exceeds ob12. Uses the
+    // real `char` pattern (exercising the std Searcher) with a no-growth safety invariant.
     #[kani::proof]
     #[kani::unwind(16)]
     fn check_remove_matches() {
