@@ -3940,18 +3940,20 @@ mod verify {
         let _ = s.split_off(at);
     }
 
-    // unwind(2): replace_range's out-of-bounds/boundary error path formats its message with
-    // a loop over the string (unlike insert/split_off's direct is_char_boundary assert); the
-    // bound cuts that infeasible-length formatting so the harness terminates.
+    // Unlike insert/split_off (a direct is_char_boundary assert, no drain), replace_range
+    // drains the removed range — an unbounded loop at symbolic length. Constrain an endpoint
+    // to the interior byte (index 1 of "é") so the boundary assert always panics BEFORE the
+    // drain is reached: the drain loop stays unreachable and needs no large unwind. unwind(4)
+    // is a safe bound for the concrete 2-byte receiver should the solver explore it.
     #[kani::proof]
     #[kani::should_panic]
-    #[kani::unwind(2)]
+    #[kani::unwind(4)]
     fn check_replace_range_non_boundary_panics() {
         let mut s = String::from("é");
         let a: usize = kani::any();
         let b: usize = kani::any();
-        kani::assume(a <= b && b <= s.len());
-        kani::cover(a == 1 || b == 1, "an interior non-boundary range end reachable");
+        kani::assume(a <= b && b <= s.len() && (a == 1 || b == 1));
+        kani::cover(a == 1 || b == 1, "interior non-boundary range reachable (non-vacuous)");
         s.replace_range(a..b, "x");
     }
 }
