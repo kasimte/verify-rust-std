@@ -3936,6 +3936,7 @@ mod verify {
         let mut s = String::from("é");
         let idx: usize = kani::any();
         kani::assume(idx > s.len()); // boundary cause excluded (idx == len is a legal append)
+        kani::cover(idx == s.len() + 1, "just past the end reachable");
         s.insert(idx, 'x');
     }
 
