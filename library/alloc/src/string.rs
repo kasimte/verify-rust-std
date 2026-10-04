@@ -3896,19 +3896,18 @@ mod verify {
         assert!(s.len() <= before);
     }
 
-    // --- disclosed-bounded: `remove_matches` with the real `char` pattern exercises the std
-    // search + byte-shift path. The searcher scans the whole haystack, so (like retain /
-    // from_utf16) it is verified over a bounded symbolic string; the arbitrary-length haystack
-    // is the disclosed residual — the searcher's scan has no loop-contract attach site
-    // (model-checking/kani#4893), so at symbolic length its object count exceeds ob12. Uses the
-    // real `char` pattern (exercising the std Searcher) with a no-growth safety invariant.
+    // --- disclosed-bounded: `remove_matches` with a concrete `char` pattern drives the real
+    // std Pattern searcher + byte-shift. The searcher's scan loop is in the callee with no
+    // loop-contract attach site (the family of model-checking/kani#4893), so at arbitrary
+    // haystack length CBMC unrolls it and exhausts resources; verified over a bounded symbolic
+    // string, the arbitrary length disclosed. The needle is concrete because a symbolic `char`
+    // pattern makes the searcher's memchr needle symbolic and likewise exhausts CBMC.
     #[kani::proof]
     #[kani::unwind(16)]
     fn check_remove_matches() {
         let mut s = any_valid_string::<3>();
         let before = s.len();
-        let pat: char = kani::any();
-        s.remove_matches(pat);
+        s.remove_matches('a');
         kani::cover(s.len() < before, "some matches removed");
         assert!(s.len() <= before); // remove_matches never grows the string; UTF-8 validity is the type invariant
     }
