@@ -1390,6 +1390,43 @@ struct TwoWaySearcher {
     memory_back: usize,
 }
 
+#[unstable(feature = "ub_checks", issue = "none")]
+impl crate::ub_checks::Invariant for StrSearcher<'_, '_> {
+    /**
+     * Safety invariant of a valid StrSearcher:
+     * 1. Both cursors stay within the haystack, and for the empty-needle searcher they
+     *    additionally lie on character boundaries (its steps are sliced directly).
+     * 2. For the Two-Way searcher, the critical-factorization constants stay within the
+     *    needle (`period` may be `needle.len() + 1` in the long-period case, which is
+     *    signalled by `memory == usize::MAX`), and in the short-period case the memory
+     *    cursors stay within the needle.
+     */
+    fn is_safe(&self) -> bool {
+        match &self.searcher {
+            StrSearcherImpl::Empty(s) => {
+                s.position <= self.haystack.len()
+                    && s.end <= self.haystack.len()
+                    && self.haystack.is_char_boundary(s.position)
+                    && self.haystack.is_char_boundary(s.end)
+            }
+            StrSearcherImpl::TwoWay(s) => {
+                !self.needle.is_empty()
+                    && s.crit_pos <= self.needle.len()
+                    && s.crit_pos_back <= self.needle.len()
+                    && 1 <= s.period
+                    && s.period <= self.needle.len() + 1
+                    && s.position <= self.haystack.len()
+                    && s.end <= self.haystack.len()
+                    && (s.memory == usize::MAX) == (s.memory_back == usize::MAX)
+                    && (s.memory == usize::MAX
+                        || (s.period <= self.needle.len()
+                            && s.memory <= self.needle.len()
+                            && s.memory_back <= self.needle.len()))
+            }
+        }
+    }
+}
+
 /*
     This is the Two-Way search algorithm, which was introduced in the paper:
     Crochemore, M., Perrin, D., 1991, Two-way string-matching, Journal of the ACM 38(3):651-675.
