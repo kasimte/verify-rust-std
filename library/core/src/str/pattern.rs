@@ -1341,6 +1341,100 @@ impl crate::ub_checks::Invariant for StrSearcher<'_, '_> {
     }
 }
 
+#[cfg(kani)]
+impl<'a, 'b> StrSearcher<'a, 'b> {
+    /// Kani-only: when a fully valid UTF-8 character starts at `bytes[pos]`, returns its
+    /// width; `None` otherwise. Full first-char validity per RFC 3629 (lead ranges, the
+    /// E0/ED/F0/F4 continuation special cases) — mirrors `str::validations`, which the
+    /// challenge grants as correct.
+    fn utf8_char_at(bytes: &[u8], pos: usize) -> Option<usize> {
+        let n = bytes.len();
+        if pos >= n {
+            return None;
+        }
+        let b0 = bytes[pos];
+        match b0 {
+            0x00..=0x7F => Some(1),
+            0xC2..=0xDF if pos + 2 <= n && matches!(bytes[pos + 1], 0x80..=0xBF) => Some(2),
+            0xE0..=0xEF if pos + 3 <= n => {
+                let b1 = bytes[pos + 1];
+                let b1_ok = match b0 {
+                    0xE0 => matches!(b1, 0xA0..=0xBF),
+                    0xED => matches!(b1, 0x80..=0x9F),
+                    _ => matches!(b1, 0x80..=0xBF),
+                };
+                if b1_ok && matches!(bytes[pos + 2], 0x80..=0xBF) { Some(3) } else { None }
+            }
+            0xF0..=0xF4 if pos + 4 <= n => {
+                let b1 = bytes[pos + 1];
+                let b1_ok = match b0 {
+                    0xF0 => matches!(b1, 0x90..=0xBF),
+                    0xF4 => matches!(b1, 0x80..=0x8F),
+                    _ => matches!(b1, 0x80..=0xBF),
+                };
+                if b1_ok
+                    && matches!(bytes[pos + 2], 0x80..=0xBF)
+                    && matches!(bytes[pos + 3], 0x80..=0xBF)
+                {
+                    Some(4)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Kani-only: an arbitrary empty-needle searcher over `haystack` whose state is symbolic,
+    /// constrained by the type invariant, and whose forward cursor sits at the start of
+    /// `chars_ahead` locally valid UTF-8 characters (each followed by a char boundary or the
+    /// end). On a valid UTF-8 haystack this holds at every boundary cursor (challenge
+    /// assumption 3), so the quantified set is a superset of the reachable states.
+    pub fn kani_arbitrary_empty_step(
+        haystack: &'a str,
+        chars_ahead: usize,
+    ) -> StrSearcher<'a, 'static> {
+        // Draw the symbolic fields as locals FIRST so no re-match on the enum (and no dead
+        // panic branch) is needed to read `position` back below.
+        let position: usize = kani::any();
+        let end: usize = kani::any();
+        let s = StrSearcher {
+            haystack,
+            needle: "",
+            searcher: StrSearcherImpl::Empty(EmptyNeedle {
+                position,
+                end,
+                is_match_fw: kani::any(),
+                is_match_bw: kani::any(),
+                is_finished: kani::any(),
+            }),
+        };
+        kani::assume(crate::ub_checks::Invariant::is_safe(&s));
+        let bytes = haystack.as_bytes();
+        let mut pos = position;
+        // Concrete <=2-iteration walk: each of the next `chars_ahead` chars must be locally
+        // valid UTF-8 with the advanced cursor landing on a char boundary (or the end). A
+        // single accumulated boolean keeps every constraint in ONE `assume` (no per-iteration
+        // assumes, nothing `assume(false)`-shaped); assumption 3 licenses it — these clauses
+        // hold at every boundary cursor of any valid UTF-8 haystack.
+        let mut ok = true;
+        let mut k = 0;
+        while k < chars_ahead && pos < bytes.len() {
+            match Self::utf8_char_at(bytes, pos) {
+                Some(w) => {
+                    pos += w;
+                    ok = ok && (pos == bytes.len() || !matches!(bytes[pos], 0x80..=0xBF));
+                }
+                None => ok = false,
+            }
+            k += 1;
+        }
+        kani::assume(ok);
+        kani::cover(true, "ch21 empty step-state live");
+        s
+    }
+}
+
 /*
     This is the Two-Way search algorithm, which was introduced in the paper:
     Crochemore, M., Perrin, D., 1991, Two-way string-matching, Journal of the ACM 38(3):651-675.
