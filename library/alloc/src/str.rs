@@ -1034,7 +1034,7 @@ unsafe fn replace_ascii(utf8_bytes: &[u8], from: u8, to: u8) -> String {
 #[unstable(feature = "kani", issue = "none")]
 mod verify {
     use core::kani;
-    use core::str::pattern::{Pattern, SearchStep, Searcher};
+    use core::str::pattern::{Pattern, SearchStep, Searcher, StrSearcher};
     use core::ub_checks::Invariant;
 
     use crate::alloc::{Layout, alloc};
@@ -1074,6 +1074,92 @@ mod verify {
         let s = "".into_searcher(haystack);
         kani::cover(true, "ch21 empty ctor state live");
         kani::assert(s.is_safe(), "C established at creation (empty arm)");
+    }
+
+    // UNBOUNDED stepping, empty-needle arm: from ANY invariant-satisfying state over a
+    // SYMBOLIC-length haystack (assumption 3 encoded as a 1-char valid-UTF-8 window at the
+    // cursor), one real `next()` preserves the invariant. The empty-arm step is O(1), so no
+    // loop contract is involved.
+    #[kani::proof]
+    #[kani::stub(core::str::slice_error_fail, ch21_stub_sef)]
+    #[kani::unwind(5)]
+    fn ch21_empty_next_preserves() {
+        let haystack = symbolic_str();
+        let mut s = StrSearcher::kani_arbitrary_empty_step(haystack, 1);
+        let _step = s.next();
+        kani::assert(s.is_safe(), "empty next: C preserved (unbounded haystack)");
+    }
+
+    // UNBOUNDED stepping, empty-needle arm: every span `next()` returns lies on UTF-8
+    // boundaries of the symbolic-length haystack.
+    #[kani::proof]
+    #[kani::stub(core::str::slice_error_fail, ch21_stub_sef)]
+    #[kani::unwind(5)]
+    fn ch21_empty_next_boundaries() {
+        let haystack = symbolic_str();
+        let mut s = StrSearcher::kani_arbitrary_empty_step(haystack, 1);
+        match s.next() {
+            SearchStep::Match(a, b) | SearchStep::Reject(a, b) => {
+                kani::cover(true, "ch21 empty next span returned");
+                kani::assert(haystack.is_char_boundary(a), "empty next: start on boundary");
+                kani::assert(haystack.is_char_boundary(b), "empty next: end on boundary");
+            }
+            SearchStep::Done => kani::cover(true, "ch21 empty next done arm"),
+        }
+    }
+
+    // UNBOUNDED stepping: on the empty arm `next_match` returns after <=2 internal `next`
+    // steps (Match/Reject strictly alternate), so a 2-char cursor window covers it — the
+    // iteration bound is structural, independent of haystack length.
+    #[kani::proof]
+    #[kani::stub(core::str::slice_error_fail, ch21_stub_sef)]
+    #[kani::unwind(4)]
+    fn ch21_empty_next_match_preserves() {
+        let haystack = symbolic_str();
+        let mut s = StrSearcher::kani_arbitrary_empty_step(haystack, 2);
+        let _m = s.next_match();
+        kani::assert(s.is_safe(), "empty next_match: C preserved (unbounded haystack)");
+    }
+
+    #[kani::proof]
+    #[kani::stub(core::str::slice_error_fail, ch21_stub_sef)]
+    #[kani::unwind(4)]
+    fn ch21_empty_next_match_boundaries() {
+        let haystack = symbolic_str();
+        let mut s = StrSearcher::kani_arbitrary_empty_step(haystack, 2);
+        if let Some((a, b)) = s.next_match() {
+            kani::cover(true, "ch21 empty next_match span returned");
+            kani::assert(haystack.is_char_boundary(a), "empty next_match: start on boundary");
+            kani::assert(haystack.is_char_boundary(b), "empty next_match: end on boundary");
+        } else {
+            kani::cover(true, "ch21 empty next_match exhausted arm");
+        }
+    }
+
+    // Same structural <=2-step argument for the provided method `next_reject`.
+    #[kani::proof]
+    #[kani::stub(core::str::slice_error_fail, ch21_stub_sef)]
+    #[kani::unwind(4)]
+    fn ch21_empty_next_reject_preserves() {
+        let haystack = symbolic_str();
+        let mut s = StrSearcher::kani_arbitrary_empty_step(haystack, 2);
+        let _r = s.next_reject();
+        kani::assert(s.is_safe(), "empty next_reject: C preserved (unbounded haystack)");
+    }
+
+    #[kani::proof]
+    #[kani::stub(core::str::slice_error_fail, ch21_stub_sef)]
+    #[kani::unwind(4)]
+    fn ch21_empty_next_reject_boundaries() {
+        let haystack = symbolic_str();
+        let mut s = StrSearcher::kani_arbitrary_empty_step(haystack, 2);
+        if let Some((a, b)) = s.next_reject() {
+            kani::cover(true, "ch21 empty next_reject span returned");
+            kani::assert(haystack.is_char_boundary(a), "empty next_reject: start on boundary");
+            kani::assert(haystack.is_char_boundary(b), "empty next_reject: end on boundary");
+        } else {
+            kani::cover(true, "ch21 empty next_reject exhausted arm");
+        }
     }
 
     // The str indexing in these methods carries a diverging panic-formatter path
