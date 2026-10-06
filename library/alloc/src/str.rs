@@ -1190,10 +1190,10 @@ mod verify {
     // Bounded companions: drive the real StrSearcher methods to completion on a concrete
     // fixture containing a multi-byte char, asserting the type invariant is preserved after
     // every step and that every returned span lies on UTF-8 char boundaries. Bounded by
-    // construction (concrete inputs); they exercise the real algorithm end-to-end alongside
-    // the unbounded empty-constructor proof above. Fixture "aé" = 'a' (1 byte) + 'é' (2 bytes):
-    // char boundaries at 0, 1, 3; offset 2 is mid-character.
-    // unwind 10: the fixture drives at most 5 steps + Done per arm (sequences traced in the
+    // construction (concrete inputs); one loop per searcher arm: needle "" (empty arm),
+    // "a" (one byte, single-byte arm), "é" (two bytes, Two-Way arm). Fixture "aé" =
+    // 'a' (1 byte) + 'é' (2 bytes): char boundaries at 0, 1, 3; offset 2 is mid-character.
+    // unwind 10: each arm's loop drives at most 5 steps + Done (sequences traced in the
     // count asserts below); 10 leaves slack for the unwind check itself.
     #[kani::proof]
     #[kani::stub(core::str::slice_error_fail, ch21_stub_sef)]
@@ -1220,29 +1220,59 @@ mod verify {
             }
         }
         // "" over "aé": Match(0,0) Reject(0,1) Match(1,1) Reject(1,3) Match(3,3) Done.
-        kani::assert(m == 3 && r == 2, "next empty: exact step counts (3 matches, 2 rejects)");
+        kani::assert(
+            m == 3 && r == 2,
+            "next empty: exact step counts (3 matches, 2 rejects)",
+        );
         let (mut m, mut r) = (0, 0);
-        let mut t = "a".into_searcher(h);
+        let mut by = "a".into_searcher(h);
         loop {
-            match t.next() {
+            match by.next() {
+                SearchStep::Match(a, b) => {
+                    m += 1;
+                    kani::assert(h.is_char_boundary(a), "next byte: span start on boundary");
+                    kani::assert(h.is_char_boundary(b), "next byte: span end on boundary");
+                    kani::assert(by.is_safe(), "next byte: C preserved");
+                }
+                SearchStep::Reject(a, b) => {
+                    r += 1;
+                    kani::assert(h.is_char_boundary(a), "next byte: span start on boundary");
+                    kani::assert(h.is_char_boundary(b), "next byte: span end on boundary");
+                    kani::assert(by.is_safe(), "next byte: C preserved");
+                }
+                SearchStep::Done => break,
+            }
+        }
+        // "a" over "aé" (one-byte needle, single-byte arm): Match(0,1) Reject(1,3) Done.
+        kani::assert(
+            m == 1 && r == 1,
+            "next byte: exact step counts (1 match, 1 reject)",
+        );
+        let (mut m, mut r) = (0, 0);
+        let mut tw = "é".into_searcher(h);
+        loop {
+            match tw.next() {
                 SearchStep::Match(a, b) => {
                     m += 1;
                     kani::assert(h.is_char_boundary(a), "next twoway: span start on boundary");
                     kani::assert(h.is_char_boundary(b), "next twoway: span end on boundary");
-                    kani::assert(t.is_safe(), "next twoway: C preserved");
+                    kani::assert(tw.is_safe(), "next twoway: C preserved");
                 }
                 SearchStep::Reject(a, b) => {
                     r += 1;
                     kani::assert(h.is_char_boundary(a), "next twoway: span start on boundary");
                     kani::assert(h.is_char_boundary(b), "next twoway: span end on boundary");
-                    kani::assert(t.is_safe(), "next twoway: C preserved");
+                    kani::assert(tw.is_safe(), "next twoway: C preserved");
                 }
                 SearchStep::Done => break,
             }
         }
-        // "a" over "aé": Match(0,1) Reject(1,3) Done.
-        kani::assert(m == 1 && r == 1, "next twoway: exact step counts (1 match, 1 reject)");
-        kani::cover(true, "ch21 next: both arms driven to Done");
+        // "é" over "aé" (two-byte needle, Two-Way arm): Reject(0,1) Match(1,3) Done.
+        kani::assert(
+            m == 1 && r == 1,
+            "next twoway: exact step counts (1 match, 1 reject)",
+        );
+        kani::cover(true, "ch21 next: all three arms driven to Done");
     }
 
     // unwind 10: at most 3 yields + exhaustion per arm (counts asserted below).
@@ -1263,17 +1293,31 @@ mod verify {
         // "" matches at every boundary of "aé": 0, 1, 3.
         kani::assert(n == 3, "next_match empty: exactly 3 matches");
         let mut n = 0;
-        let mut t = "a".into_searcher(h);
-        while let Some((a, b)) = t.next_match() {
+        let mut by = "a".into_searcher(h);
+        while let Some((a, b)) = by.next_match() {
             n += 1;
-            kani::assert(h.is_char_boundary(a), "next_match twoway: start on boundary");
-            kani::assert(h.is_char_boundary(b), "next_match twoway: end on boundary");
-            kani::assert(t.is_safe(), "next_match twoway: C preserved");
+            kani::assert(h.is_char_boundary(a), "next_match byte: start on boundary");
+            kani::assert(h.is_char_boundary(b), "next_match byte: end on boundary");
+            kani::assert(by.is_safe(), "next_match byte: C preserved");
         }
-        kani::assert(t.is_safe(), "next_match twoway: C preserved at Done");
+        kani::assert(by.is_safe(), "next_match byte: C preserved at Done");
         // "a" occurs once in "aé", at (0,1).
+        kani::assert(n == 1, "next_match byte: exactly 1 match");
+        let mut n = 0;
+        let mut tw = "é".into_searcher(h);
+        while let Some((a, b)) = tw.next_match() {
+            n += 1;
+            kani::assert(
+                h.is_char_boundary(a),
+                "next_match twoway: start on boundary",
+            );
+            kani::assert(h.is_char_boundary(b), "next_match twoway: end on boundary");
+            kani::assert(tw.is_safe(), "next_match twoway: C preserved");
+        }
+        kani::assert(tw.is_safe(), "next_match twoway: C preserved at Done");
+        // "é" occurs once in "aé", at (1,3).
         kani::assert(n == 1, "next_match twoway: exactly 1 match");
-        kani::cover(true, "ch21 next_match: both arms exhausted");
+        kani::cover(true, "ch21 next_match: all three arms exhausted");
     }
 
     // unwind 10: at most 2 yields + exhaustion per arm (counts asserted below); exercises the
@@ -1287,7 +1331,10 @@ mod verify {
         let mut e = "".into_searcher(h);
         while let Some((a, b)) = e.next_reject() {
             n += 1;
-            kani::assert(h.is_char_boundary(a), "next_reject empty: start on boundary");
+            kani::assert(
+                h.is_char_boundary(a),
+                "next_reject empty: start on boundary",
+            );
             kani::assert(h.is_char_boundary(b), "next_reject empty: end on boundary");
             kani::assert(e.is_safe(), "next_reject empty: C preserved");
         }
@@ -1295,17 +1342,31 @@ mod verify {
         // "" rejects each char of "aé": (0,1) and (1,3).
         kani::assert(n == 2, "next_reject empty: exactly 2 rejects");
         let mut n = 0;
-        let mut t = "a".into_searcher(h);
-        while let Some((a, b)) = t.next_reject() {
+        let mut by = "a".into_searcher(h);
+        while let Some((a, b)) = by.next_reject() {
             n += 1;
-            kani::assert(h.is_char_boundary(a), "next_reject twoway: start on boundary");
-            kani::assert(h.is_char_boundary(b), "next_reject twoway: end on boundary");
-            kani::assert(t.is_safe(), "next_reject twoway: C preserved");
+            kani::assert(h.is_char_boundary(a), "next_reject byte: start on boundary");
+            kani::assert(h.is_char_boundary(b), "next_reject byte: end on boundary");
+            kani::assert(by.is_safe(), "next_reject byte: C preserved");
         }
-        kani::assert(t.is_safe(), "next_reject twoway: C preserved at Done");
+        kani::assert(by.is_safe(), "next_reject byte: C preserved at Done");
         // After the match at (0,1), the remaining "é" is rejected as (1,3).
+        kani::assert(n == 1, "next_reject byte: exactly 1 reject");
+        let mut n = 0;
+        let mut tw = "é".into_searcher(h);
+        while let Some((a, b)) = tw.next_reject() {
+            n += 1;
+            kani::assert(
+                h.is_char_boundary(a),
+                "next_reject twoway: start on boundary",
+            );
+            kani::assert(h.is_char_boundary(b), "next_reject twoway: end on boundary");
+            kani::assert(tw.is_safe(), "next_reject twoway: C preserved");
+        }
+        kani::assert(tw.is_safe(), "next_reject twoway: C preserved at Done");
+        // The leading 'a' is rejected as (0,1); the match at (1,3) is skipped.
         kani::assert(n == 1, "next_reject twoway: exactly 1 reject");
-        kani::cover(true, "ch21 next_reject: both arms exhausted");
+        kani::cover(true, "ch21 next_reject: all three arms exhausted");
     }
 
     // The reverse methods (`next_back`, `next_match_back`, `next_reject_back`) are NOT given
