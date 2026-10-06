@@ -1527,6 +1527,44 @@ impl<'a, 'b> StrSearcher<'a, 'b> {
         kani::cover(true, "ch21 empty step-state live");
         s
     }
+
+    /// Kani-only: an arbitrary single-byte-needle searcher over `haystack` whose state is
+    /// symbolic, constrained by the type invariant, and whose forward cursor sits at the
+    /// start of one locally valid UTF-8 character (followed by a char boundary or the end).
+    /// `needle` must be a one-byte str — necessarily ASCII, which is what keeps the Match
+    /// branch's `position + 1` on a char boundary. On a valid UTF-8 haystack the window
+    /// holds at every boundary cursor (challenge assumption 3), so the quantified set is a
+    /// superset of the reachable states.
+    pub fn kani_arbitrary_byte_step(haystack: &'a str, needle: &'b str) -> StrSearcher<'a, 'b> {
+        kani::assume(needle.len() == 1);
+        let position: usize = kani::any();
+        let end: usize = kani::any();
+        let s = StrSearcher {
+            haystack,
+            needle,
+            searcher: StrSearcherImpl::Byte(ByteNeedle {
+                b: needle.as_bytes()[0],
+                position,
+                end,
+            }),
+        };
+        kani::assume(crate::ub_checks::Invariant::is_safe(&s));
+        let bytes = haystack.as_bytes();
+        // One-char forward window at the cursor (same shape as the empty-arm builder).
+        let ok = if position < bytes.len() {
+            match Self::utf8_char_at(bytes, position) {
+                Some(w) => {
+                    position + w == bytes.len() || !matches!(bytes[position + w], 0x80..=0xBF)
+                }
+                None => false,
+            }
+        } else {
+            true
+        };
+        kani::assume(ok);
+        kani::cover(true, "ch21 byte step-state live");
+        s
+    }
 }
 
 /*

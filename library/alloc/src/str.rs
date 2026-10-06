@@ -1076,6 +1076,79 @@ mod verify {
         kani::assert(s.is_safe(), "C established at creation (empty arm)");
     }
 
+    /// A 1-byte `&str` with a symbolic ASCII byte — the needle class `StrSearcher::new`
+    /// routes to the single-byte searcher arm. ASCII is forced: a one-byte str is valid
+    /// UTF-8 exactly when its byte is ASCII.
+    fn symbolic_ascii_needle() -> &'static str {
+        let needle = symbolic_str();
+        kani::assume(needle.len() == 1 && needle.as_bytes()[0] <= 0x7F);
+        needle
+    }
+
+    // Criterion 1, single-byte arm: creating a searcher from ANY 1-byte needle over a valid
+    // UTF-8 haystack of UNBOUNDED (symbolic) length establishes the type invariant
+    // (`StrSearcher::new` routes every one-byte needle to the single-byte arm). The
+    // constructor sets position=0/end=haystack.len() and performs no slicing, so the
+    // boundary checks take their O(1) fast paths.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn ch21_into_searcher_establishes_c_byte() {
+        let haystack = symbolic_str();
+        let needle = symbolic_ascii_needle();
+        let s = needle.into_searcher(haystack);
+        kani::cover(true, "ch21 byte ctor state live");
+        kani::assert(s.is_safe(), "C established at creation (byte arm)");
+    }
+
+    // UNBOUNDED stepping, single-byte arm: from ANY invariant-satisfying state over a
+    // SYMBOLIC-length haystack (assumption 3 encoded as a 1-char valid-UTF-8 window at the
+    // cursor), one real `next()` preserves the invariant. The byte-arm step is O(1): one
+    // byte compare plus `ceil_char_boundary`, whose scan ends inside the window's char.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn ch21_byte_next_preserves() {
+        let haystack = symbolic_str();
+        let needle = symbolic_ascii_needle();
+        let mut s = StrSearcher::kani_arbitrary_byte_step(haystack, needle);
+        let _step = s.next();
+        kani::assert(s.is_safe(), "byte next: C preserved (unbounded haystack)");
+    }
+
+    // UNBOUNDED stepping, single-byte arm: every span `next()` returns lies on UTF-8
+    // boundaries of the symbolic-length haystack.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn ch21_byte_next_boundaries() {
+        let haystack = symbolic_str();
+        let needle = symbolic_ascii_needle();
+        let mut s = StrSearcher::kani_arbitrary_byte_step(haystack, needle);
+        match s.next() {
+            SearchStep::Match(a, b) => {
+                kani::cover(true, "ch21 byte next match span returned");
+                kani::assert(
+                    haystack.is_char_boundary(a),
+                    "byte next match: start on boundary",
+                );
+                kani::assert(
+                    haystack.is_char_boundary(b),
+                    "byte next match: end on boundary",
+                );
+            }
+            SearchStep::Reject(a, b) => {
+                kani::cover(true, "ch21 byte next reject span returned");
+                kani::assert(
+                    haystack.is_char_boundary(a),
+                    "byte next reject: start on boundary",
+                );
+                kani::assert(
+                    haystack.is_char_boundary(b),
+                    "byte next reject: end on boundary",
+                );
+            }
+            SearchStep::Done => kani::cover(true, "ch21 byte next done arm"),
+        }
+    }
+
     // UNBOUNDED stepping, empty-needle arm: from ANY invariant-satisfying state over a
     // SYMBOLIC-length haystack (assumption 3 encoded as a 1-char valid-UTF-8 window at the
     // cursor), one real `next()` preserves the invariant. The empty-arm step is O(1), so no
