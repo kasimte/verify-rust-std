@@ -1396,7 +1396,9 @@ impl crate::ub_checks::Invariant for StrSearcher<'_, '_> {
      * Safety invariant of a valid StrSearcher:
      * 1. Both cursors stay within the haystack, and for the empty-needle searcher they
      *    additionally lie on character boundaries (its steps are sliced directly).
-     * 2. For the Two-Way searcher, the critical-factorization constants stay within the
+     * 2. The single-byte searcher steps char-by-char like the empty-needle one, so both
+     *    its cursors stay within the haystack and on character boundaries.
+     * 3. For the Two-Way searcher, the critical-factorization constants stay within the
      *    needle (`period` may be `needle.len() + 1` in the long-period case, which is
      *    signalled by `memory == usize::MAX`), and in the short-period case the memory
      *    cursors stay within the needle.
@@ -1404,6 +1406,12 @@ impl crate::ub_checks::Invariant for StrSearcher<'_, '_> {
     fn is_safe(&self) -> bool {
         match &self.searcher {
             StrSearcherImpl::Empty(s) => {
+                s.position <= self.haystack.len()
+                    && s.end <= self.haystack.len()
+                    && self.haystack.is_char_boundary(s.position)
+                    && self.haystack.is_char_boundary(s.end)
+            }
+            StrSearcherImpl::Byte(s) => {
                 s.position <= self.haystack.len()
                     && s.end <= self.haystack.len()
                     && self.haystack.is_char_boundary(s.position)
