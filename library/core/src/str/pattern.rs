@@ -1542,11 +1542,7 @@ impl<'a, 'b> StrSearcher<'a, 'b> {
         let s = StrSearcher {
             haystack,
             needle,
-            searcher: StrSearcherImpl::Byte(ByteNeedle {
-                b: needle.as_bytes()[0],
-                position,
-                end,
-            }),
+            searcher: StrSearcherImpl::Byte(ByteNeedle { b: needle.as_bytes()[0], position, end }),
         };
         kani::assume(crate::ub_checks::Invariant::is_safe(&s));
         let bytes = haystack.as_bytes();

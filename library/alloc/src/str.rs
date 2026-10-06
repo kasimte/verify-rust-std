@@ -1125,25 +1125,13 @@ mod verify {
         match s.next() {
             SearchStep::Match(a, b) => {
                 kani::cover(true, "ch21 byte next match span returned");
-                kani::assert(
-                    haystack.is_char_boundary(a),
-                    "byte next match: start on boundary",
-                );
-                kani::assert(
-                    haystack.is_char_boundary(b),
-                    "byte next match: end on boundary",
-                );
+                kani::assert(haystack.is_char_boundary(a), "byte next match: start on boundary");
+                kani::assert(haystack.is_char_boundary(b), "byte next match: end on boundary");
             }
             SearchStep::Reject(a, b) => {
                 kani::cover(true, "ch21 byte next reject span returned");
-                kani::assert(
-                    haystack.is_char_boundary(a),
-                    "byte next reject: start on boundary",
-                );
-                kani::assert(
-                    haystack.is_char_boundary(b),
-                    "byte next reject: end on boundary",
-                );
+                kani::assert(haystack.is_char_boundary(a), "byte next reject: start on boundary");
+                kani::assert(haystack.is_char_boundary(b), "byte next reject: end on boundary");
             }
             SearchStep::Done => kani::cover(true, "ch21 byte next done arm"),
         }
@@ -1293,10 +1281,7 @@ mod verify {
             }
         }
         // "" over "aé": Match(0,0) Reject(0,1) Match(1,1) Reject(1,3) Match(3,3) Done.
-        kani::assert(
-            m == 3 && r == 2,
-            "next empty: exact step counts (3 matches, 2 rejects)",
-        );
+        kani::assert(m == 3 && r == 2, "next empty: exact step counts (3 matches, 2 rejects)");
         let (mut m, mut r) = (0, 0);
         let mut by = "a".into_searcher(h);
         loop {
@@ -1317,10 +1302,7 @@ mod verify {
             }
         }
         // "a" over "aé" (one-byte needle, single-byte arm): Match(0,1) Reject(1,3) Done.
-        kani::assert(
-            m == 1 && r == 1,
-            "next byte: exact step counts (1 match, 1 reject)",
-        );
+        kani::assert(m == 1 && r == 1, "next byte: exact step counts (1 match, 1 reject)");
         let (mut m, mut r) = (0, 0);
         let mut tw = "é".into_searcher(h);
         loop {
@@ -1341,10 +1323,7 @@ mod verify {
             }
         }
         // "é" over "aé" (two-byte needle, Two-Way arm): Reject(0,1) Match(1,3) Done.
-        kani::assert(
-            m == 1 && r == 1,
-            "next twoway: exact step counts (1 match, 1 reject)",
-        );
+        kani::assert(m == 1 && r == 1, "next twoway: exact step counts (1 match, 1 reject)");
         kani::cover(true, "ch21 next: all three arms driven to Done");
     }
 
@@ -1380,10 +1359,7 @@ mod verify {
         let mut tw = "é".into_searcher(h);
         while let Some((a, b)) = tw.next_match() {
             n += 1;
-            kani::assert(
-                h.is_char_boundary(a),
-                "next_match twoway: start on boundary",
-            );
+            kani::assert(h.is_char_boundary(a), "next_match twoway: start on boundary");
             kani::assert(h.is_char_boundary(b), "next_match twoway: end on boundary");
             kani::assert(tw.is_safe(), "next_match twoway: C preserved");
         }
@@ -1404,10 +1380,7 @@ mod verify {
         let mut e = "".into_searcher(h);
         while let Some((a, b)) = e.next_reject() {
             n += 1;
-            kani::assert(
-                h.is_char_boundary(a),
-                "next_reject empty: start on boundary",
-            );
+            kani::assert(h.is_char_boundary(a), "next_reject empty: start on boundary");
             kani::assert(h.is_char_boundary(b), "next_reject empty: end on boundary");
             kani::assert(e.is_safe(), "next_reject empty: C preserved");
         }
@@ -1429,10 +1402,7 @@ mod verify {
         let mut tw = "é".into_searcher(h);
         while let Some((a, b)) = tw.next_reject() {
             n += 1;
-            kani::assert(
-                h.is_char_boundary(a),
-                "next_reject twoway: start on boundary",
-            );
+            kani::assert(h.is_char_boundary(a), "next_reject twoway: start on boundary");
             kani::assert(h.is_char_boundary(b), "next_reject twoway: end on boundary");
             kani::assert(tw.is_safe(), "next_reject twoway: C preserved");
         }
