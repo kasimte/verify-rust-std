@@ -1137,6 +1137,60 @@ mod verify {
         }
     }
 
+    // The single-byte arm's match scans (`next_match`/`next_match_back`) call
+    // `memchr`/`memrchr`, whose functional correctness the challenge grants (the slice
+    // module assumption). The UNBOUNDED match proofs stub both with this nondeterministic
+    // model of that granted contract: it may report any in-range position holding the
+    // sought byte, or report no occurrence — a superset of the real scans' behaviors
+    // (minimality of the reported hit is dropped; the safety proofs do not consume it).
+    // When the sought byte is ASCII, a valid UTF-8 haystack also places a char boundary
+    // (or the end) immediately after a hit — the same locally granted window as the step
+    // builders. The real scans still run end to end in the bounded companions below.
+    #[cfg(kani)]
+    fn ch21_stub_mem_scan(x: u8, text: &[u8]) -> Option<usize> {
+        if kani::any() {
+            let i: usize = kani::any();
+            kani::assume(i < text.len() && text[i] == x);
+            kani::assume(x > 0x7F || i + 1 == text.len() || !matches!(text[i + 1], 0x80..=0xBF));
+            kani::cover(true, "ch21 mem-scan hit modeled");
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    // UNBOUNDED match scanning, single-byte arm: from ANY invariant-satisfying state over
+    // a SYMBOLIC-length haystack, one real `next_match()` preserves the invariant, with
+    // the `memchr` scan modeled by its granted contract (`ch21_stub_mem_scan`).
+    #[kani::proof]
+    #[kani::stub(core::slice::memchr::memchr, ch21_stub_mem_scan)]
+    #[kani::unwind(5)]
+    fn ch21_byte_next_match_preserves() {
+        let haystack = symbolic_str();
+        let needle = symbolic_ascii_needle();
+        let mut s = StrSearcher::kani_arbitrary_byte_state(haystack, needle);
+        let _m = s.next_match();
+        kani::assert(s.is_safe(), "byte next_match: C preserved (unbounded haystack)");
+    }
+
+    // UNBOUNDED match scanning, single-byte arm: every span `next_match()` returns lies on
+    // UTF-8 boundaries of the symbolic-length haystack.
+    #[kani::proof]
+    #[kani::stub(core::slice::memchr::memchr, ch21_stub_mem_scan)]
+    #[kani::unwind(5)]
+    fn ch21_byte_next_match_boundaries() {
+        let haystack = symbolic_str();
+        let needle = symbolic_ascii_needle();
+        let mut s = StrSearcher::kani_arbitrary_byte_state(haystack, needle);
+        if let Some((a, b)) = s.next_match() {
+            kani::cover(true, "ch21 byte next_match span returned");
+            kani::assert(haystack.is_char_boundary(a), "byte next_match: start on boundary");
+            kani::assert(haystack.is_char_boundary(b), "byte next_match: end on boundary");
+        } else {
+            kani::cover(true, "ch21 byte next_match none arm");
+        }
+    }
+
     // UNBOUNDED stepping, empty-needle arm: from ANY invariant-satisfying state over a
     // SYMBOLIC-length haystack (assumption 3 encoded as a 1-char valid-UTF-8 window at the
     // cursor), one real `next()` preserves the invariant. The empty-arm step is O(1), so no

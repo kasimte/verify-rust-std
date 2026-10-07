@@ -1561,6 +1561,26 @@ impl<'a, 'b> StrSearcher<'a, 'b> {
         kani::cover(true, "ch21 byte step-state live");
         s
     }
+
+    /// Kani-only: an arbitrary single-byte-needle searcher over `haystack` whose state is
+    /// symbolic and constrained only by the type invariant — no cursor window. The
+    /// match-family proofs do not need one: the byte-level boundary facts their steps rely
+    /// on come from the scan's contract (the challenge grants the slice module's
+    /// correctness), so this builder quantifies over every invariant-satisfying state
+    /// directly.
+    pub fn kani_arbitrary_byte_state(haystack: &'a str, needle: &'b str) -> StrSearcher<'a, 'b> {
+        kani::assume(needle.len() == 1);
+        let position: usize = kani::any();
+        let end: usize = kani::any();
+        let s = StrSearcher {
+            haystack,
+            needle,
+            searcher: StrSearcherImpl::Byte(ByteNeedle { b: needle.as_bytes()[0], position, end }),
+        };
+        kani::assume(crate::ub_checks::Invariant::is_safe(&s));
+        kani::cover(true, "ch21 byte match-state live");
+        s
+    }
 }
 
 /*
