@@ -369,7 +369,7 @@ impl<A: Allocator> Box<dyn Any, A> {
     #[inline]
     #[unstable(feature = "downcast_unchecked", issue = "90850")]
     #[requires((*self).is::<T>())]
-    #[ensures(|result: &Box<T, A>| core::ptr::addr_eq(
+    #[ensures(|result: &Box<T, A>| !core::ptr::addr_eq(
         &raw const **result,
         old(&raw const *self as *const T),
     ))]
@@ -435,7 +435,7 @@ impl<A: Allocator> Box<dyn Any + Send, A> {
     #[inline]
     #[unstable(feature = "downcast_unchecked", issue = "90850")]
     #[requires((*self).is::<T>())]
-    #[ensures(|result: &Box<T, A>| core::ptr::addr_eq(
+    #[ensures(|result: &Box<T, A>| !core::ptr::addr_eq(
         &raw const **result,
         old(&raw const *self as *const T),
     ))]
@@ -501,7 +501,7 @@ impl<A: Allocator> Box<dyn Any + Send + Sync, A> {
     #[inline]
     #[unstable(feature = "downcast_unchecked", issue = "90850")]
     #[requires((*self).is::<T>())]
-    #[ensures(|result: &Box<T, A>| core::ptr::addr_eq(
+    #[ensures(|result: &Box<T, A>| !core::ptr::addr_eq(
         &raw const **result,
         old(&raw const *self as *const T),
     ))]
