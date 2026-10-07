@@ -1034,7 +1034,7 @@ unsafe fn replace_ascii(utf8_bytes: &[u8], from: u8, to: u8) -> String {
 #[unstable(feature = "kani", issue = "none")]
 mod verify {
     use core::kani;
-    use core::str::pattern::{Pattern, SearchStep, Searcher, StrSearcher};
+    use core::str::pattern::{Pattern, ReverseSearcher, SearchStep, Searcher, StrSearcher};
     use core::ub_checks::Invariant;
 
     use crate::alloc::{Layout, alloc};
@@ -1188,6 +1188,41 @@ mod verify {
             kani::assert(haystack.is_char_boundary(b), "byte next_match: end on boundary");
         } else {
             kani::cover(true, "ch21 byte next_match none arm");
+        }
+    }
+
+    // UNBOUNDED reverse match scanning, single-byte arm: from ANY invariant-satisfying
+    // state, one real `next_match_back()` preserves the invariant, with the `memrchr`
+    // scan modeled by the same granted contract. Unlike the reverse step methods, this
+    // path performs no boundary walk — the found byte itself carries the boundary facts.
+    #[kani::proof]
+    #[kani::stub(core::slice::memchr::memrchr, ch21_stub_mem_scan)]
+    #[kani::unwind(5)]
+    fn ch21_byte_next_match_back_preserves() {
+        let haystack = symbolic_str();
+        let needle = symbolic_ascii_needle();
+        let mut s = StrSearcher::kani_arbitrary_byte_state(haystack, needle);
+        let _m = s.next_match_back();
+        kani::assert(s.is_safe(), "byte next_match_back: C preserved (unbounded haystack)");
+    }
+
+    // UNBOUNDED reverse match scanning, single-byte arm: every span `next_match_back()`
+    // returns lies on UTF-8 boundaries — the span end lands either strictly inside the
+    // scanned prefix (the window after the hit) or exactly on the backward cursor (a
+    // boundary by the invariant).
+    #[kani::proof]
+    #[kani::stub(core::slice::memchr::memrchr, ch21_stub_mem_scan)]
+    #[kani::unwind(5)]
+    fn ch21_byte_next_match_back_boundaries() {
+        let haystack = symbolic_str();
+        let needle = symbolic_ascii_needle();
+        let mut s = StrSearcher::kani_arbitrary_byte_state(haystack, needle);
+        if let Some((a, b)) = s.next_match_back() {
+            kani::cover(true, "ch21 byte next_match_back span returned");
+            kani::assert(haystack.is_char_boundary(a), "byte next_match_back: start on boundary");
+            kani::assert(haystack.is_char_boundary(b), "byte next_match_back: end on boundary");
+        } else {
+            kani::cover(true, "ch21 byte next_match_back none arm");
         }
     }
 
