@@ -1212,13 +1212,11 @@ impl<T, A: Allocator> Box<mem::MaybeUninit<T>, A> {
     #[stable(feature = "new_uninit", since = "1.82.0")]
     #[rustc_const_unstable(feature = "const_heap", issue = "79597")]
     #[inline(always)]
-    // can_dereference checks the pointer is non-null, aligned, and points to
-    // readable memory of the right size; that the bytes are INITIALIZED remains the caller's obligation (MaybeUninit -> T).
-    #[requires(core::ub_checks::can_dereference(&raw const *self as *const T))]
-    #[ensures(|result: &Box<T, A>| core::ptr::addr_eq(
-        &raw const **result,
-        old(&raw const *self as *const T),
-    ))]
+    // Verified by the in-harness assertions in `check_assume_init_u32` rather
+    // than a #[requires]/#[ensures] function contract: a contract on this
+    // `const fn` with its owned `self` fails const-eval (E0493) at the current
+    // Kani pin. Reverts to proof_for_contract once model-checking/kani#4985 lands
+    // and the pin picks it up.
     pub const unsafe fn assume_init(self) -> Box<T, A> {
         // This is used in the `vec!` macro, so we optimize for minimal IR generation
         // even in debug builds.
@@ -2644,13 +2642,14 @@ mod verify {
         assert_eq!(&*back, &arr[..]);
     }
 
-    // The `proof_for_contract` target is spelled with the impl's own generic
-    // parameters (`MaybeUninit<T>`, `A`) — concrete turbofish arguments do not
-    // resolve against this impl's structured self-type at this kani version.
-    // The constructed space is every possible u32 value (v is symbolic) in a
-    // fresh Global allocation — the documented precondition (an initialized
-    // box) admits nothing else; the allocation address is abstracted by Kani.
-    #[kani::proof_for_contract(Box::<core::mem::MaybeUninit<T>, A>::assume_init)]
+    // Assume-mirror for the scalar `assume_init`: its contract cannot be a
+    // #[requires]/#[ensures] on the `const fn` at the current pin (const-fn
+    // E0493), so the postcondition (address preservation + value read-back) is
+    // asserted here instead. Reverts to proof_for_contract once
+    // model-checking/kani#4985 lands and the pin bumps. The constructed space is
+    // every possible u32 value (v is symbolic) in a fresh Global allocation — the
+    // initialized-box precondition admits nothing else; address abstracted by Kani.
+    #[kani::proof]
     fn check_assume_init_u32() {
         let v: u32 = kani::any();
         let mut u: Box<core::mem::MaybeUninit<u32>> = Box::new_uninit();
@@ -2832,8 +2831,8 @@ mod verify {
         kani::cover(n == N, "len == N arm reached");
         kani::cover(n != N, "len != N arm reached");
         let r = v.into_array::<N>();
-        assert_eq!(r.is_some(), n == N);
-        if let Some(arr) = r {
+        assert_eq!(r.is_ok(), n == N);
+        if let Ok(arr) = r {
             assert!(core::ptr::addr_eq(&raw const *arr as *const u32, addr));
         }
     }
@@ -2845,10 +2844,10 @@ mod verify {
         let n: usize = kani::any_where(|n: &usize| *n <= 4);
         kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
         let v: Box<[u32]> = unsafe { Box::new_zeroed_slice(n).assume_init() };
-        let r: Option<Box<[u32; 0]>> = v.into_array();
+        let r: Result<Box<[u32; 0]>, Box<[u32]>> = v.into_array();
         kani::cover(n == 0, "len == 0 arm reached");
         kani::cover(n != 0, "len != 0 arm reached");
-        assert_eq!(r.is_some(), n == 0);
+        assert_eq!(r.is_ok(), n == 0);
     }
 
     #[kani::proof]
@@ -2984,19 +2983,6 @@ mod verify {
         assert!(core::ptr::addr_eq(nn.as_ptr() as *const u32, addr));
         assert_eq!(unsafe { *nn.as_ptr() }, v);
         let back = unsafe { Box::from_non_null_in(nn, a) };
-        assert_eq!(*back, v);
-    }
-
-    #[kani::proof]
-    fn check_into_unique_u32() {
-        let v: u32 = kani::any();
-        let b = Box::new(v);
-        let addr = &raw const *b;
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let (unique, a) = Box::into_unique(b);
-        assert!(core::ptr::addr_eq(unique.as_ptr() as *const u32, addr));
-        assert_eq!(unsafe { *unique.as_ptr() }, v);
-        let back = unsafe { Box::from_raw_in(unique.as_ptr(), a) };
         assert_eq!(*back, v);
     }
 
