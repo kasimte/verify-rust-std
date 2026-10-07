@@ -1145,12 +1145,17 @@ mod verify {
     // (minimality of the reported hit is dropped; the safety proofs do not consume it).
     // When the sought byte is ASCII, a valid UTF-8 haystack also places a char boundary
     // (or the end) immediately after a hit — the same locally granted window as the step
-    // builders. The real scans still run end to end in the bounded companions below.
+    // builders. The real forward scan still runs end to end in the `ch21_bounded_next_match`
+    // companion; a bounded reverse-scan companion is a disclosed residual (see the
+    // reverse-method note below).
     #[cfg(kani)]
     fn ch21_stub_mem_scan(x: u8, text: &[u8]) -> Option<usize> {
         if kani::any() {
             let i: usize = kani::any();
             kani::assume(i < text.len() && text[i] == x);
+            // The post-hit window holds only for an ASCII hit; the `x > 0x7F` disjunct keeps
+            // the model sound if ever reused for a non-ASCII byte (inert here — a single-byte
+            // needle is always ASCII).
             kani::assume(x > 0x7F || i + 1 == text.len() || !matches!(text[i + 1], 0x80..=0xBF));
             kani::cover(true, "ch21 mem-scan hit modeled");
             Some(i)
