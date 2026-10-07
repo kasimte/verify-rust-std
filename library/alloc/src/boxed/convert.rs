@@ -783,15 +783,10 @@ mod verify {
     use super::*;
     use crate::alloc::Layout;
 
-    // `proof_for_contract` resolves none of the three same-named `dyn`-self
-    // downcast_unchecked impls at this kani version (their impl blocks live in
-    // this module while `Box` lives in `boxed`, so the resolver renders them in
-    // an `<impl ...>` path form no spelling can match); the contract is
-    // exercised by construction below. Once the resolver handles that form,
-    // this attribute becomes `proof_for_contract` and this note is deleted. The constructed space is every possible u32 payload
-    // behind the erased type; the precondition (contained value is a u32)
-    // admits no other erased type, and TypeId equality fixes the metadata.
-    #[kani::proof]
+    // Target spelled through the impl's generic parameters: a concrete turbofish
+    // does not resolve against the `dyn`-self type, but the generic-parameter
+    // form does. The precondition `(*self).is::<u32>()` fixes the erased type.
+    #[kani::proof_for_contract(Box::<dyn core::any::Any + 'static, A>::downcast_unchecked::<u32>)]
     fn check_downcast_unchecked_any_u32() {
         let v: u32 = kani::any();
         let b: Box<dyn Any> = Box::new(v);
@@ -802,15 +797,10 @@ mod verify {
         assert!(core::ptr::addr_eq(&raw const *d, addr));
     }
 
-    // `proof_for_contract` resolves none of the three same-named `dyn`-self
-    // downcast_unchecked impls at this kani version (their impl blocks live in
-    // this module while `Box` lives in `boxed`, so the resolver renders them in
-    // an `<impl ...>` path form no spelling can match); the contract is
-    // exercised by construction below. Once the resolver handles that form,
-    // this attribute becomes `proof_for_contract` and this note is deleted. The constructed space is every possible u32 payload
-    // behind the erased type; the precondition (contained value is a u32)
-    // admits no other erased type, and TypeId equality fixes the metadata.
-    #[kani::proof]
+    // Target spelled through the impl's generic parameters: a concrete turbofish
+    // does not resolve against the `dyn`-self type, but the generic-parameter
+    // form does. The precondition `(*self).is::<u32>()` fixes the erased type.
+    #[kani::proof_for_contract(Box::<dyn core::any::Any + core::marker::Send + 'static, A>::downcast_unchecked::<u32>)]
     fn check_downcast_unchecked_any_send_u32() {
         let v: u32 = kani::any();
         let b: Box<dyn Any + Send> = Box::new(v);
@@ -821,15 +811,10 @@ mod verify {
         assert!(core::ptr::addr_eq(&raw const *d, addr));
     }
 
-    // `proof_for_contract` resolves none of the three same-named `dyn`-self
-    // downcast_unchecked impls at this kani version (their impl blocks live in
-    // this module while `Box` lives in `boxed`, so the resolver renders them in
-    // an `<impl ...>` path form no spelling can match); the contract is
-    // exercised by construction below. Once the resolver handles that form,
-    // this attribute becomes `proof_for_contract` and this note is deleted. The constructed space is every possible u32 payload
-    // behind the erased type; the precondition (contained value is a u32)
-    // admits no other erased type, and TypeId equality fixes the metadata.
-    #[kani::proof]
+    // Target spelled through the impl's generic parameters: a concrete turbofish
+    // does not resolve against the `dyn`-self type, but the generic-parameter
+    // form does. The precondition `(*self).is::<u32>()` fixes the erased type.
+    #[kani::proof_for_contract(Box::<dyn core::any::Any + core::marker::Send + core::marker::Sync + 'static, A>::downcast_unchecked::<u32>)]
     fn check_downcast_unchecked_any_send_sync_u32() {
         let v: u32 = kani::any();
         let b: Box<dyn Any + Send + Sync> = Box::new(v);
