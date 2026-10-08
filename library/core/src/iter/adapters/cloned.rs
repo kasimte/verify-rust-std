@@ -4,7 +4,7 @@ use safety::requires;
 
 use crate::iter::adapters::zip::try_get_unchecked;
 use crate::iter::adapters::{SourceIter, TrustedRandomAccess, TrustedRandomAccessNoCoerce};
-use crate::iter::{FusedIterator, InPlaceIterable, TrustedLen, UncheckedIterator};
+use crate::iter::{FusedIterator, InPlaceIterable, TrustedLen};
 #[cfg(kani)]
 use crate::kani;
 use crate::ops::Try;
@@ -24,7 +24,7 @@ pub struct Cloned<I> {
 }
 
 impl<I> Cloned<I> {
-    pub(in crate::iter) fn new(it: I) -> Cloned<I> {
+    pub(in crate::iter) const fn new(it: I) -> Cloned<I> {
         Cloned { it }
     }
 }
@@ -152,22 +152,6 @@ where
 {
 }
 
-impl<'a, I, T: 'a> UncheckedIterator for Cloned<I>
-where
-    I: UncheckedIterator<Item = &'a T>,
-    T: Clone,
-{
-    // Contract note: documentation-only, verified via the mirrored `assume` in
-    // `mod verify` — see the note on the first `#[requires]` in this file.
-    #[requires(self.it.size_hint().0 > 0)]
-    unsafe fn next_unchecked(&mut self) -> T {
-        // SAFETY: `Cloned` is 1:1 with the inner iterator, so if the caller promised
-        // that there's an element left, the inner iterator has one too.
-        let item = unsafe { self.it.next_unchecked() };
-        item.clone()
-    }
-}
-
 #[stable(feature = "default_iters", since = "1.70.0")]
 impl<I: Default> Default for Cloned<I> {
     /// Creates a `Cloned` iterator from the default value of `I`
@@ -270,30 +254,6 @@ mod verify {
     }
 
     #[kani::proof]
-    fn check_cloned_next_unchecked_u8() {
-        // MAX_LEN = u32::MAX verifies here: no functional assert, so the array is
-        // never bit-blasted (the flattening ceiling only applies to asserted variants).
-        const MAX_LEN: usize = u32::MAX as usize;
-        let array: [u8; MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Cloned::new(slice.iter());
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
-    }
-
-    #[kani::proof]
-    fn check_cloned_next_unchecked_unit() {
-        const MAX_LEN: usize = isize::MAX as usize;
-        let array: [(); MAX_LEN] = [(); MAX_LEN];
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Cloned::new(slice.iter());
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
-    }
-
-    #[kani::proof]
     fn check_cloned_get_unchecked_char() {
         const MAX_LEN: usize = 50;
         let array: [char; MAX_LEN] = kani::any();
@@ -315,27 +275,5 @@ mod verify {
         kani::assume(idx < iter.size_hint().0);
         kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
         let _ = unsafe { iter.__iterator_get_unchecked(idx) };
-    }
-
-    #[kani::proof]
-    fn check_cloned_next_unchecked_char() {
-        const MAX_LEN: usize = 50;
-        let array: [char; MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Cloned::new(slice.iter());
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
-    }
-
-    #[kani::proof]
-    fn check_cloned_next_unchecked_tup() {
-        const MAX_LEN: usize = 50;
-        let array: [(char, u8); MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Cloned::new(slice.iter());
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
     }
 }

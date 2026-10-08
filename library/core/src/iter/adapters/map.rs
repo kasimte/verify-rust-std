@@ -3,7 +3,7 @@ use safety::requires;
 use crate::fmt;
 use crate::iter::adapters::zip::try_get_unchecked;
 use crate::iter::adapters::{SourceIter, TrustedRandomAccess, TrustedRandomAccessNoCoerce};
-use crate::iter::{FusedIterator, InPlaceIterable, TrustedFused, TrustedLen, UncheckedIterator};
+use crate::iter::{FusedIterator, InPlaceIterable, TrustedFused, TrustedLen};
 #[cfg(kani)]
 use crate::kani;
 use crate::num::NonZero;
@@ -69,7 +69,7 @@ pub struct Map<I, F> {
 }
 
 impl<I, F> Map<I, F> {
-    pub(in crate::iter) fn new(iter: I, f: F) -> Map<I, F> {
+    pub(in crate::iter) const fn new(iter: I, f: F) -> Map<I, F> {
         Map { iter, f }
     }
 
@@ -204,22 +204,6 @@ where
 {
 }
 
-impl<B, I, F> UncheckedIterator for Map<I, F>
-where
-    I: UncheckedIterator,
-    F: FnMut(I::Item) -> B,
-{
-    // Contract note: documentation-only, verified via the mirrored `assume` in
-    // `mod verify` — see the note on the first `#[requires]` in this file.
-    #[requires(self.iter.size_hint().0 > 0)]
-    unsafe fn next_unchecked(&mut self) -> B {
-        // SAFETY: `Map` is 1:1 with the inner iterator, so if the caller promised
-        // that there's an element left, the inner iterator has one too.
-        let item = unsafe { self.iter.next_unchecked() };
-        (self.f)(item)
-    }
-}
-
 #[doc(hidden)]
 #[unstable(feature = "trusted_random_access", issue = "none")]
 unsafe impl<I, F> TrustedRandomAccess for Map<I, F> where I: TrustedRandomAccess {}
@@ -300,30 +284,6 @@ mod verify {
     }
 
     #[kani::proof]
-    fn check_map_next_unchecked_u8() {
-        // MAX_LEN = u32::MAX verifies here: no functional assert, so the array is
-        // never bit-blasted (the flattening ceiling only applies to asserted variants).
-        const MAX_LEN: usize = u32::MAX as usize;
-        let array: [u8; MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Map::new(slice.iter(), |x: &u8| *x);
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
-    }
-
-    #[kani::proof]
-    fn check_map_next_unchecked_unit() {
-        const MAX_LEN: usize = isize::MAX as usize;
-        let array: [(); MAX_LEN] = [(); MAX_LEN];
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Map::new(slice.iter(), |x: &()| *x);
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
-    }
-
-    #[kani::proof]
     fn check_map_get_unchecked_char() {
         const MAX_LEN: usize = 50;
         let array: [char; MAX_LEN] = kani::any();
@@ -345,27 +305,5 @@ mod verify {
         kani::assume(idx < iter.size_hint().0);
         kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
         let _ = unsafe { iter.__iterator_get_unchecked(idx) };
-    }
-
-    #[kani::proof]
-    fn check_map_next_unchecked_char() {
-        const MAX_LEN: usize = 50;
-        let array: [char; MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Map::new(slice.iter(), |x: &char| *x);
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
-    }
-
-    #[kani::proof]
-    fn check_map_next_unchecked_tup() {
-        const MAX_LEN: usize = 50;
-        let array: [(char, u8); MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Map::new(slice.iter(), |x: &(char, u8)| *x);
-        kani::assume(iter.size_hint().0 > 0);
-        kani::cover(true, "non-vacuity witness: the assumed input space is non-empty");
-        let _ = unsafe { iter.next_unchecked() };
     }
 }
