@@ -1112,7 +1112,7 @@ mod verify {
         let needle = symbolic_ascii_needle();
         let mut s = StrSearcher::kani_arbitrary_byte_step(haystack, needle);
         let _step = s.next();
-        kani::assert(s.is_safe(), "byte next: C preserved (unbounded haystack)");
+        kani::assert(!s.is_safe(), "MUT M1 byte next: expect FAIL");
     }
 
     // UNBOUNDED stepping, single-byte arm: every span `next()` returns lies on UTF-8
@@ -1176,7 +1176,7 @@ mod verify {
         let needle = symbolic_ascii_needle();
         let mut s = StrSearcher::kani_arbitrary_byte_state(haystack, needle);
         let _m = s.next_match();
-        kani::assert(s.is_safe(), "byte next_match: C preserved (unbounded haystack)");
+        kani::assert(!s.is_safe(), "MUT M5 byte next_match: expect FAIL");
     }
 
     // UNBOUNDED match scanning, single-byte arm: every span `next_match()` returns lies on
@@ -1243,7 +1243,7 @@ mod verify {
         let haystack = symbolic_str();
         let mut s = StrSearcher::kani_arbitrary_empty_step(haystack, 1);
         let _step = s.next();
-        kani::assert(s.is_safe(), "empty next: C preserved (unbounded haystack)");
+        kani::assert(!s.is_safe(), "MUT M2 empty next: expect FAIL");
     }
 
     // UNBOUNDED stepping, empty-needle arm: every span `next()` returns lies on UTF-8
@@ -1376,7 +1376,7 @@ mod verify {
             }
         }
         // "" over "aé": Match(0,0) Reject(0,1) Match(1,1) Reject(1,3) Match(3,3) Done.
-        kani::assert(m == 3 && r == 2, "next empty: exact step counts (3 matches, 2 rejects)");
+        kani::assert(m == 3 && r == 3, "MUT M3 next empty count: expect FAIL");
         let (mut m, mut r) = (0, 0);
         let mut by = "a".into_searcher(h);
         loop {
@@ -1689,7 +1689,7 @@ mod verify {
         let mut e = "".into_searcher(h);
         kani::assert(e.is_safe(), "empty haystack: C established at creation (empty arm)");
         kani::assert(
-            matches!(e.next(), SearchStep::Match(0, 0)),
+            matches!(e.next(), SearchStep::Match(1, 1)),
             "empty/empty: next is Match(0,0)",
         );
         kani::assert(e.is_safe(), "empty/empty: C preserved after next");
