@@ -1,7 +1,5 @@
 use core::num::NonZero;
 
-use safety::requires;
-
 use crate::iter::adapters::zip::try_get_unchecked;
 use crate::iter::adapters::{SourceIter, TrustedRandomAccess, TrustedRandomAccessNoCoerce};
 use crate::iter::{FusedIterator, InPlaceIterable, TrustedLen};
@@ -65,12 +63,7 @@ where
         self.it.map(T::clone).fold(init, f)
     }
 
-    // Contract note: Kani's `proof_for_contract` cannot target trait-impl
-    // methods (kani#1997), so this `#[requires]` is not checked as a contract; it is
-    // normative documentation of the precondition. Verification happens in the
-    // `verify::check_*` harness below, which `kani::assume`s this same
-    // expression before the call. Keep the two in sync when editing either.
-    #[requires(idx < self.it.size_hint().0)]
+    // Precondition (verified by the mirrored kani::assume in verify::check_* below, not as a contract): idx < self.it.size_hint().0.
     unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> T
     where
         Self: TrustedRandomAccessNoCoerce,

@@ -1,5 +1,3 @@
-use safety::requires;
-
 use crate::cmp;
 use crate::fmt::{self, Debug};
 use crate::iter::{FusedIterator, InPlaceIterable, SourceIter, TrustedFused, TrustedLen};
@@ -111,12 +109,7 @@ where
     }
 
     #[inline]
-    // Contract note: Kani's `proof_for_contract` cannot target trait-impl
-    // methods (kani#1997), so this `#[requires]` is not checked as a contract; it is
-    // normative documentation of the precondition. Verification happens in the
-    // `verify::check_*` harness below, which `kani::assume`s this same
-    // expression before the call. Keep the two in sync when editing either.
-    #[requires(idx < self.size_hint().0)]
+    // Precondition (verified by the mirrored kani::assume in verify::check_* below, not as a contract): idx < self.size_hint().0.
     #[cfg_attr(kani, kani::modifies(self))]
     unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item
     where
@@ -275,15 +268,7 @@ where
     }
 
     #[inline]
-    // Contract note: documentation-only (verified via the mirrored `assume` in
-    // `mod verify` — see the note on the first `#[requires]` in this file). The
-    // subtraction form avoids overflow in `self.index + idx`.
-    #[requires(
-        self.index <= self.a.size()
-            && idx < self.a.size() - self.index
-            && self.index <= self.b.size()
-            && idx < self.b.size() - self.index
-    )]
+    // Precondition (verified by the mirrored kani::assume in verify::check_* below, not as a contract): self.index <= self.a.size() && idx < self.a.size() - self.index && self.index <= self.b.size() && idx < self.b.size() - self.index.
     #[cfg_attr(kani, kani::modifies(self))]
     unsafe fn get_unchecked(&mut self, idx: usize) -> <Self as Iterator>::Item {
         let idx = self.index + idx;
