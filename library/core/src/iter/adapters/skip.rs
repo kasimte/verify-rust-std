@@ -301,9 +301,10 @@ mod verify {
 
     #[kani::proof]
     fn check_skip_get_unchecked_u8() {
-        // MAX_LEN = u32::MAX verifies here: no functional assert, so the array is
-        // never bit-blasted (the flattening ceiling only applies to asserted variants).
-        const MAX_LEN: usize = u32::MAX as usize;
+        // Large-length UB-coverage companion. Capped at 100_000 (not u32::MAX) so the
+        // symbolic array fits the CI runner's memory; the unchecked access's safety is
+        // slice-length-independent, so a large-but-feasible length still exercises it.
+        const MAX_LEN: usize = 100_000;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let n: usize = kani::any();

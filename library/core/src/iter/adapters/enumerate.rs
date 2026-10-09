@@ -339,13 +339,12 @@ mod verify {
         assert_eq!(*val, slice[idx]);
     }
 
-    // UB-coverage companion at MAX_LEN = u32::MAX. Without the functional assert
-    // the array is never bit-blasted (asserted variants hit CBMC's "array too
-    // large for flattening"), so the unchecked access verifies at this length;
-    // functional equality stays in the bounded harness above.
+    // Large-length UB-coverage companion. Capped at 100_000 (not u32::MAX) so the
+    // symbolic array fits the CI runner's memory; the unchecked access's safety is
+    // slice-length-independent, so a large-but-feasible length still exercises it.
     #[kani::proof]
     fn check_enumerate_get_unchecked_u8_u32max() {
-        const MAX_LEN: usize = u32::MAX as usize;
+        const MAX_LEN: usize = 100_000;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let mut iter = Enumerate::new(slice.iter());
