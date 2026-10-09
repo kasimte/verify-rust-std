@@ -1,5 +1,7 @@
 //! Indexing implementations for `[T]`.
 
+use safety::requires;
+
 use crate::intrinsics::slice_get_unchecked;
 use crate::marker::Destruct;
 use crate::panic::const_panic;
@@ -202,6 +204,7 @@ const unsafe impl<T> SliceIndex<[T]> for usize {
 
     #[inline]
     #[track_caller]
+    #[requires(self < slice.len())]
     unsafe fn get_unchecked(self, slice: *const [T]) -> *const T {
         assert_unsafe_precondition!(
             check_library_ub, // Hitting the `assume` provides worse const-eval and Miri diagnostics.
@@ -222,6 +225,7 @@ const unsafe impl<T> SliceIndex<[T]> for usize {
 
     #[inline]
     #[track_caller]
+    #[requires(self < slice.len())]
     unsafe fn get_unchecked_mut(self, slice: *mut [T]) -> *mut T {
         assert_unsafe_precondition!(
             check_library_ub,

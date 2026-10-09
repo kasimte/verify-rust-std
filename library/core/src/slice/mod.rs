@@ -6407,27 +6407,27 @@ mod verify {
         let _ = unsafe { s.as_chunks_unchecked_mut::<4>() };
     }
 
-    // ===== Ch17 Phase 1 · Task 8: get_unchecked trio — assume-mirror no-UB proofs.
-    // Real proof_for_contract is kani#1997-walled (generic SliceIndex trait method); the pfc conversion
-    // rides the kani#4865 pin-bump (our fix), matching the #549/#689 family pattern. =====
-    #[kani::proof]
+    // ===== Ch17 Phase 1 · Task 8: get_unchecked trio.
+    // get_unchecked / get_unchecked_mut use proof_for_contract against the `usize` SliceIndex impl,
+    // whose `#[requires(self < slice.len())]` contract lives in slice::index.
+    // get_disjoint_unchecked_mut stays assume-mirror: its path carries a const generic (`[I; N]`),
+    // which Kani cannot instantiate in a pfc target (kani#4084), and its precondition is a pairwise
+    // non-overlap predicate over the index array. =====
+    #[kani::proof_for_contract(<usize as crate::slice::SliceIndex<[u8]>>::get_unchecked)]
     fn check_get_unchecked_usize() {
         let arr: [u8; 100] = kani::any();
         let s: &[u8] = kani::slice::any_slice_of_array(&arr);
         let i: usize = kani::any();
-        kani::assume(i < s.len()); // documented caller safety precondition (assume-mirror)
-        kani::cover(s.len() >= 1, "in-bounds index reachable");
-        let _ = unsafe { s.get_unchecked(i) };
+        let ptr: *const [u8] = s;
+        let _ = unsafe { <usize as crate::slice::SliceIndex<[u8]>>::get_unchecked(i, ptr) };
     }
-    #[kani::proof]
+    #[kani::proof_for_contract(<usize as crate::slice::SliceIndex<[u8]>>::get_unchecked_mut)]
     fn check_get_unchecked_mut_usize() {
         let mut arr: [u8; 100] = kani::any();
         let s: &mut [u8] = kani::slice::any_slice_of_array_mut(&mut arr);
-        let len = s.len();
         let i: usize = kani::any();
-        kani::assume(i < len);
-        kani::cover(len >= 1, "in-bounds index reachable");
-        let _ = unsafe { s.get_unchecked_mut(i) };
+        let ptr: *mut [u8] = s;
+        let _ = unsafe { <usize as crate::slice::SliceIndex<[u8]>>::get_unchecked_mut(i, ptr) };
     }
     #[kani::proof]
     fn check_get_disjoint_unchecked_mut_usize_2() {
