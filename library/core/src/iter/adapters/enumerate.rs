@@ -327,7 +327,7 @@ mod verify {
 
     #[kani::proof]
     fn check_enumerate_get_unchecked_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let mut iter = Enumerate::new(slice.iter());

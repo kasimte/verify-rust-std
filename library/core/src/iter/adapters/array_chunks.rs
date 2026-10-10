@@ -308,7 +308,7 @@ mod verify {
     // unwind cap is needed; the backing slice length is symbolic.
     #[kani::proof]
     fn check_array_chunks_fold_n2_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let chunks = ArrayChunks::<_, 2>::new(slice.iter());

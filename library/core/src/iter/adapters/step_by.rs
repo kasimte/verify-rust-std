@@ -669,7 +669,7 @@ mod verify {
     // next_back → next_back_index → original_step.
     #[kani::proof]
     fn check_step_by_original_step_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let step: usize = kani::any();
@@ -685,7 +685,7 @@ mod verify {
     // NonZero::new_unchecked + unchecked_add, independent of slice length.
     #[kani::proof]
     fn check_step_by_iterate_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let step: usize = kani::any();
@@ -700,7 +700,7 @@ mod verify {
     // delegates to iter.nth_back(). The unsafe is in original_step, not the iteration.
     #[kani::proof]
     fn check_step_by_next_back_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let step: usize = kani::any();

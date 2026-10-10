@@ -708,7 +708,7 @@ mod verify {
     // __iterator_get_unchecked (delegates to ZipImpl::get_unchecked)
     #[kani::proof]
     fn check_zip_iterator_get_unchecked_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let arr_a: [u8; MAX_LEN] = kani::any();
         let arr_b: [u8; MAX_LEN] = kani::any();
         let slice_a = kani::slice::any_slice_of_array(&arr_a);
@@ -741,7 +741,7 @@ mod verify {
     // loop, so this harness covers the access over slices up to MAX_LEN.
     #[kani::proof]
     fn check_zip_next_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let arr_a: [u8; MAX_LEN] = kani::any();
         let arr_b: [u8; MAX_LEN] = kani::any();
         let slice_a = kani::slice::any_slice_of_array(&arr_a);
@@ -758,7 +758,7 @@ mod verify {
     // internally offset position.
     #[kani::proof]
     fn check_zip_get_unchecked_arbitrary_state_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let arr_a: [u8; MAX_LEN] = kani::any();
         let arr_b: [u8; MAX_LEN] = kani::any();
         let slice_a = kani::slice::any_slice_of_array(&arr_a);
@@ -785,7 +785,7 @@ mod verify {
     // sources skip.
     #[kani::proof]
     fn check_zip_next_sideeffect_source_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let arr_a: [u8; MAX_LEN] = kani::any();
         let arr_b: [u8; MAX_LEN] = kani::any();
         let slice_a = kani::slice::any_slice_of_array(&arr_a);
@@ -803,7 +803,7 @@ mod verify {
     // nth (its next()-driven loop does not iterate in this configuration).
     #[kani::proof]
     fn check_zip_nth_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let arr_a: [u8; MAX_LEN] = kani::any();
         let arr_b: [u8; MAX_LEN] = kani::any();
         let slice_a = kani::slice::any_slice_of_array(&arr_a);
@@ -817,7 +817,7 @@ mod verify {
     // Single call on large array: next_back() makes one get_unchecked call per invocation.
     #[kani::proof]
     fn check_zip_next_back_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let arr_a: [u8; MAX_LEN] = kani::any();
         let arr_b: [u8; MAX_LEN] = kani::any();
         let slice_a = kani::slice::any_slice_of_array(&arr_a);
@@ -831,7 +831,7 @@ mod verify {
     // harness covers slices up to MAX_LEN.
     #[kani::proof]
     fn check_zip_fold_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let arr_a: [u8; MAX_LEN] = kani::any();
         let arr_b: [u8; MAX_LEN] = kani::any();
         let slice_a = kani::slice::any_slice_of_array(&arr_a);

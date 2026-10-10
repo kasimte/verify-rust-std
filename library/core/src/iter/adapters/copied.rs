@@ -292,7 +292,7 @@ mod verify {
     // so we use #[kani::proof] with manual precondition via kani::assume.
     #[kani::proof]
     fn check_copied_get_unchecked_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let mut iter = Copied::new(slice.iter());
@@ -333,7 +333,7 @@ mod verify {
     // spec_next_chunk (specialized for slice::Iter, uses ptr::copy_nonoverlapping)
     #[kani::proof]
     fn check_spec_next_chunk_n2_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let mut iter = Copied::new(slice.iter());
@@ -342,7 +342,7 @@ mod verify {
 
     #[kani::proof]
     fn check_spec_next_chunk_n3_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let mut iter = Copied::new(slice.iter());

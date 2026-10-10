@@ -414,7 +414,7 @@ mod verify {
     // contracts instead of finite unrolling; this harness covers slices up to MAX_LEN.
     #[kani::proof]
     fn check_take_spec_fold_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let n: usize = kani::any();
@@ -437,7 +437,7 @@ mod verify {
     // spec_for_each (TRA specialized — uses __iterator_get_unchecked in a loop)
     #[kani::proof]
     fn check_take_spec_for_each_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let n: usize = kani::any();

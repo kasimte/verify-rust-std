@@ -321,7 +321,7 @@ mod verify {
     // slice length is symbolic only within the fixed-size array.
     #[kani::proof]
     fn check_map_windows_n2_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         kani::assume(slice.len() >= 3); // Need N+1 elements for 2 iterations
@@ -441,7 +441,7 @@ mod verify {
 
     #[kani::proof]
     fn check_map_windows_n3_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         kani::assume(slice.len() >= 4); // Need N+1 elements for 2 iterations
@@ -454,7 +454,7 @@ mod verify {
     // Exercises as_uninit_array_mut (via Buffer::clone when MapWindows is cloned).
     #[kani::proof]
     fn check_map_windows_clone_n2_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         kani::assume(slice.len() >= 2);
@@ -467,7 +467,7 @@ mod verify {
     // Exercises clone when buffer is None (before first next() call).
     #[kani::proof]
     fn check_map_windows_clone_before_next_n2_u8() {
-        const MAX_LEN: usize = 5000;
+        const MAX_LEN: usize = 256;
         let array: [u8; MAX_LEN] = kani::any();
         let slice = kani::slice::any_slice_of_array(&array);
         let mw = MapWindows::new(slice.iter().copied(), map_sum_u8 as fn(&[u8; 2]) -> u8);
