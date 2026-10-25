@@ -4763,6 +4763,53 @@ mod verify {
         }
     }
 
+    // Grow-from-empty canaries for RawVec's `min_non_zero_cap` size branch
+    // (raw_vec/mod.rs: `if size == 1 {8} else if size <= 1024 {4} else {1}`).
+    // The builders below use `with_capacity`, which bypasses that branch; these
+    // push onto an empty Vec so growth reaches it. Element bytes are concrete
+    // (the branch is on `size_of::<T>()`, a compile-time constant), so only the
+    // insert/remove positions are symbolic. A 64-byte element exercises the
+    // middle arm, a 2048-byte element the else arm; bare `[u8; N]` elements fix
+    // the size exactly without a newtype's never-read-field lint.
+    // Middle arm (64 B): initial allocation + a middle-size reallocation +
+    // an interior insert and remove. Each `cover` is a reachability witness
+    // (non-vacuity evidence); the capacity covers witness the exact
+    // `min_non_zero_cap` arm (cap 4 for a 64-byte element).
+    #[kani::proof]
+    fn check_bigshape_mid_arm() {
+        let mut v: Vec<[u8; 64]> = Vec::new();
+        v.push([0u8; 64]); // grow from empty -> middle arm
+        kani::cover(v.capacity() == 4, "min_non_zero_cap middle arm (size 64) reached");
+        v.push([0u8; 64]);
+        v.push([0u8; 64]);
+        v.push([0u8; 64]);
+        v.push([0u8; 64]); // len 5 > cap 4 -> reallocation
+        kani::cover(v.capacity() > 4, "middle-arm reallocation exercised");
+        let i: usize = kani::any_where(|&k: &usize| k <= v.len());
+        kani::cover(i < v.len(), "interior insert exercised");
+        v.insert(i, [0u8; 64]);
+        let j: usize = kani::any_where(|&k: &usize| k < v.len());
+        kani::cover(j < v.len() - 1, "interior remove exercised");
+        v.remove(j);
+    }
+
+    // Else arm (2 KiB): kept to the minimal op count that still exercises a
+    // realloc + shift, so this canary isolates "is a >1 KiB element affordable
+    // in CBMC". Covers witness the arm (cap 1) and the interior ops. If it
+    // passes cheaply, a follow-up brings it to the middle-arm harness's depth.
+    #[kani::proof]
+    fn check_bigshape_insert_remove() {
+        let mut v: Vec<[u8; 2048]> = Vec::new();
+        v.push([0u8; 2048]); // grow from empty -> else arm
+        kani::cover(v.capacity() == 1, "min_non_zero_cap else arm (size 2048) reached");
+        let i: usize = kani::any_where(|&k: &usize| k <= v.len());
+        kani::cover(i < v.len(), "interior insert exercised");
+        v.insert(i, [0u8; 2048]); // reallocs 1 -> 2 and shifts
+        let j: usize = kani::any_where(|&k: &usize| k < v.len());
+        kani::cover(j < v.len() - 1, "interior remove exercised");
+        v.remove(j);
+    }
+
     // Symbolic length 0..=N over a bounded backing array (loop-free build).
     fn any_vec_u8<const N: usize>() -> Vec<u8> {
         let arr: [u8; N] = kani::any();
