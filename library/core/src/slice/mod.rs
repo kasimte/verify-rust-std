@@ -6335,6 +6335,23 @@ mod verify {
         arr.rotate_right(2);
     }
 
+    #[kani::proof]
+    #[kani::unwind(64)]
+    fn check_rotate_swap_big_t() {
+        // [usize;4] = 32B (== 32, so NOT the >32B gcd arm). len=24, mid=12 → left=right=12:
+        // min=12 > 256/32=8 → not memmove; left+right=24 >= 24 and size 32 <= 32 → swap (Algorithm 3).
+        // Reaches the swap arm at the minimum count it allows (replaces the u8 residual that needed
+        // 500+ elements). The dispatch dims (12/12/32B) are CONCRETE, so CBMC takes exactly the swap
+        // path — reached by construction, not via a symbolic branch that could dodge it.
+        // unwind(64) must cover BOTH kani::any over the 24-elem array (~25, cf. the [usize;5]×14 gcd
+        // harness @ unwind(20)) AND swap_nonoverlapping over 12×32B (~48); tune down if the canary slacks.
+        let mut arr: [[usize; 4]; 24] = kani::any();
+        // scalar sub-element compare: a whole-[usize;4] `!=` lowers to memcmp (6.11 builtin-loop
+        // artifact) — same reason check_rotate_gcd_big_t compares arr[0][0].
+        kani::cover(arr[0][0] != arr[23][0], "non-uniform contents rotated through the swap arm");
+        arr.rotate_left(12);
+    }
+
     // ===== Ch17 · panic-path pairs (should_panic): safe fns that panic on a precondition
     // violation, verified to panic as documented (R3 split success/failure; the success harnesses
     // above assume the precondition). They panic on the leading assert, before any loop. =====
