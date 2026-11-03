@@ -4850,6 +4850,25 @@ mod verify {
         v
     }
 
+    // Symbolic UNBOUNDED length (Rung-1-proven verifier_nondet_vec idiom):
+    // symbolic capacity (allocation-invariant only, matching any_vec_symcap) +
+    // a write_bytes intrinsic fill + set_len. No fixed-size array, no length
+    // bound -- the whole length axis is symbolic up to the allocation limit.
+    fn any_vec_u8_unbounded() -> Vec<u8> {
+        let cap: usize = kani::any();
+        kani::assume(cap <= (isize::MAX as usize) / 4);
+        let sz: usize = kani::any();
+        kani::assume(sz <= cap);
+        kani::cover(sz > 64, "unbounded length reachable");
+        let mut v = Vec::<u8>::with_capacity(cap);
+        // SAFETY: sz <= cap bytes initialized, then len set to sz.
+        unsafe {
+            core::ptr::write_bytes(v.as_mut_ptr(), kani::any::<u8>(), sz);
+            v.set_len(sz);
+        }
+        v
+    }
+
     // Bounded builder over any element type: capacity N, symbolic length
     // 0..=N, elements pushed individually (for element types without a
     // byte-copy source).
@@ -4876,9 +4895,8 @@ mod verify {
     // retain_mut: exercises the real in-place loop, which carries the
     // loop_invariant/loop_modifies contract at its `while` in the body above.
     #[kani::proof]
-    #[kani::unwind(6)]
     fn verify_retain_mut_mixed() {
-        let mut v = any_vec_u8::<4>();
+        let mut v = any_vec_u8_unbounded();
         let n = v.len();
         v.retain_mut(|x| {
             let keep: bool = kani::any();
