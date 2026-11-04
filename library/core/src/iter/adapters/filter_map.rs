@@ -257,7 +257,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(9)]
     fn check_filter_map_next_chunk_n2_char() {
         let n: usize = kani::any();
         let mut iter = (0..n)
