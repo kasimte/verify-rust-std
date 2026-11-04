@@ -259,8 +259,9 @@ mod verify {
     #[kani::proof]
     fn check_filter_map_next_chunk_n2_char() {
         let n: usize = kani::any();
-        let mut iter = (0..n)
-            .filter_map(|i: usize| if i % 3 == 0 { Some((b'a' + (i % 26) as u8) as char) } else { None });
+        let mut iter = (0..n).filter_map(|i: usize| {
+            if i % 3 == 0 { Some((b'a' + (i % 26) as u8) as char) } else { None }
+        });
         let _ = iter.next_chunk::<2>();
     }
 }

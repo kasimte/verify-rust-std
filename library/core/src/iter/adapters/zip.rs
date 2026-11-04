@@ -841,10 +841,11 @@ mod verify {
     // spec_fold (TrustedLen specialized — uses unwrap_unchecked)
     // End-to-end bounded harness: exercises the full TrustedLen spec_fold loop path.
     // A source-level loop contract on the inner for-loop is not expressible at the
-    // pinned Kani: the required invariant (remaining == upper - index) needs a
-    // size_hint call, and method calls in loop_invariant lower incorrectly
-    // ("not enough arguments, inserting non-deterministic value"); no generic
-    // field-level alternative exists for arbitrary TrustedLen sources.
+    // pinned Kani: the contract must havoc the advanced iterators, and the fact that
+    // makes unwrap_unchecked safe (remaining == upper - index, a TrustedLen property
+    // of iterator state) cannot appear in a loop_invariant — it needs a size_hint
+    // call on generic Self, and no field-level spelling exists for arbitrary
+    // TrustedLen sources. Upstream capability gap; tracked in the PR thread.
     #[kani::proof]
     #[kani::unwind(9)]
     fn check_zip_spec_fold() {

@@ -292,8 +292,9 @@ mod verify {
     #[kani::proof]
     fn check_filter_next_chunk_dropless_n2_char() {
         let n: usize = kani::any();
-        let mut iter =
-            (0..n).map(|i: usize| (b'a' + (i % 26) as u8) as char).filter(|x: &char| (*x as u32) < 128);
+        let mut iter = (0..n)
+            .map(|i: usize| (b'a' + (i % 26) as u8) as char)
+            .filter(|x: &char| (*x as u32) < 128);
         let _ = iter.next_chunk::<2>();
     }
 }
