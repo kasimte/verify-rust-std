@@ -158,14 +158,30 @@ where
         // iterator to know how many remaining elements there are.
         let rem = self.iter.len() % N;
 
-        // Take the last `rem` elements out of `self.iter`.
-        let mut remainder =
-            // SAFETY: `unwrap_err` always succeeds because x % N < N for all x.
-            unsafe { self.iter.by_ref().rev().take(rem).next_chunk().unwrap_err_unchecked() };
+        // First-class loop (not a `rev().take(rem).next_chunk()` chain) so a
+        // Kani loop contract can attach: pull the last `rem` elements from the
+        // back, writing them in forward order directly. Do not fold back into
+        // the combinator form.
+        let mut remainder: [crate::mem::MaybeUninit<I::Item>; N] =
+            [const { crate::mem::MaybeUninit::uninit() }; N];
+        let mut i: usize = 0;
+        #[cfg_attr(kani, kani::loop_invariant(i <= rem && rem < N))]
+        #[cfg_attr(kani, kani::loop_modifies(&remainder, &i, &self.iter))]
+        while i < rem {
+            let elem = match self.iter.next_back() {
+                Some(e) => e,
+                // Unreachable: ExactSizeIterator guarantees `rem` elements remain.
+                None => break,
+            };
+            // SAFETY: i < rem < N by the loop invariant.
+            unsafe { remainder.get_unchecked_mut(rem - 1 - i) }.write(elem);
+            i += 1;
+        }
 
-        // We used `.rev()` above, so we need to re-reverse the reminder
-        remainder.as_mut_slice().reverse();
-        self.remainder = Some(remainder);
+        // SAFETY: writes landed at rem-1, rem-2, …, rem-i, so exactly the
+        // suffix (rem - i)..rem is initialized (== 0..rem on the normal path,
+        // where ExactSizeIterator guarantees i == rem).
+        self.remainder = Some(unsafe { array::IntoIter::new_unchecked(remainder, (rem - i)..rem) });
     }
 }
 
@@ -283,10 +299,20 @@ unsafe impl<I: InPlaceIterable + Iterator, const N: usize> InPlaceIterable for A
 mod verify {
     use super::*;
 
-    // next_back / next_back_remainder are omitted: goto-instrument --dfcc hangs for
-    // hours instrumenting the next_chunk/IntoIter machinery under -Z loop-contracts
-    // (kani#4967). The required __iterator_get_unchecked path is covered by the fold
-    // harness below; re-add if that tool hang is fixed.
+    // next_back_remainder (uses get_unchecked_mut, IntoIter::new_unchecked)
+    // Unbounded harness: the back-pull loop carries a source-level loop
+    // contract; the inner iterator's state is index-based (Range + ZST
+    // closure), so the loop-head havoc ranges over valid states; input length
+    // is fully symbolic, no unwind bound. The direct call keeps the contracted
+    // loop as the only loop (the public next_back path adds the un-contracted
+    // next_chunk_back machinery — the old kani#4967 --dfcc hang).
+    #[kani::proof]
+    fn check_array_chunks_next_back_remainder_unbounded() {
+        let n: usize = kani::any();
+        let mut chunks = ArrayChunks::<_, 3>::new((0..n).map(|i: usize| (i % 251) as u8));
+        chunks.next_back_remainder();
+        kani::cover(chunks.remainder.is_some(), "remainder populated");
+    }
 
     // fold (TRANC specialized — uses __iterator_get_unchecked in a loop)
     // Arbitrary-length: the fold while-loop carries a source-level loop

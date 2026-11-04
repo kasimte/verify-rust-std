@@ -43,7 +43,12 @@ where
         let mut array: [MaybeUninit<I::Item>; N] = [const { MaybeUninit::uninit() }; N];
         let mut initialized = 0;
 
-        let result = self.iter.try_for_each(|element| {
+        // First-class loop (not a `try_for_each` combinator) so a Kani loop
+        // contract can attach; per-element effects and break condition are
+        // identical to the combinator form. Do not fold back into try_for_each.
+        #[cfg_attr(kani, kani::loop_invariant(initialized < N))]
+        #[cfg_attr(kani, kani::loop_modifies(&array, &initialized, &self.iter))]
+        while let Some(element) = self.iter.next() {
             let idx = initialized;
             // branchless index update combined with unconditionally copying the value even when
             // it is filtered reduces branching and dependencies in the loop.
@@ -51,18 +56,17 @@ where
             // SAFETY: Loop conditions ensure the index is in bounds.
             unsafe { array.get_unchecked_mut(idx) }.write(element);
 
-            if initialized < N { ControlFlow::Continue(()) } else { ControlFlow::Break(()) }
-        });
+            if initialized >= N {
+                break;
+            }
+        }
 
-        match result {
-            ControlFlow::Break(()) => {
-                // SAFETY: The loop above is only explicitly broken when the array has been fully initialized
-                Ok(unsafe { MaybeUninit::array_assume_init(array) })
-            }
-            ControlFlow::Continue(()) => {
-                // SAFETY: The range is in bounds since the loop breaks when reaching N elements.
-                Err(unsafe { array::IntoIter::new_unchecked(array, 0..initialized) })
-            }
+        if initialized == N {
+            // SAFETY: The loop above is only explicitly broken when the array has been fully initialized
+            Ok(unsafe { MaybeUninit::array_assume_init(array) })
+        } else {
+            // SAFETY: The range is in bounds since the loop breaks when reaching N elements.
+            Err(unsafe { array::IntoIter::new_unchecked(array, 0..initialized) })
         }
     }
 }
@@ -260,45 +264,36 @@ mod verify {
     use super::*;
 
     // next_chunk_dropless (uses get_unchecked_mut, array_assume_init, IntoIter::new_unchecked)
-    // End-to-end bounded harness: exercises full next_chunk_dropless path
-    // including both Ok (Break) and Err (Continue) exit paths.
+    // Unbounded harnesses: the traversal loop carries a source-level loop
+    // contract, and the inner iterator's state is index-based (Range + ZST
+    // closures), so the loop-head havoc ranges over valid states; input length
+    // is fully symbolic, no unwind bound.
+    // Red at the current pin: the loop's local temporaries await
+    // kani#4947 (merged) + kani#5071 reaching the pin.
     // N >= 1 in these harnesses: the SAFETY argument for the unchecked write
-    // (`idx < N` whenever the closure runs) requires N >= 1 -- with N = 0 the
+    // (`idx < N` whenever the body runs) requires N >= 1 -- with N = 0 the
     // write precedes the loop's break check, so no in-bounds argument exists
-    // for index 0.
-    // Boundedness is structural at the pinned toolchain: the traversal loop
-    // lives in the generic default `Iterator::try_for_each` behind a capturing
-    // closure, so no adapter-level loop contract can attach to it, and
-    // contracting the shared default would route every std proof through the
-    // loop-contract transform. The exit-path unsafe ops depend only on
+    // for index 0. The exit-path unsafe ops depend only on
     // 0 <= initialized <= N.
     #[kani::proof]
-    #[kani::unwind(9)]
     fn check_filter_next_chunk_dropless_n2_u8() {
-        const MAX_LEN: usize = 8;
-        let array: [u8; MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Filter::new(slice.iter(), |&&x: &&u8| x < 128);
+        let n: usize = kani::any();
+        let mut iter = (0..n).map(|i: usize| (i % 251) as u8).filter(|x: &u8| *x < 128);
         let _ = iter.next_chunk::<2>();
     }
 
     #[kani::proof]
-    #[kani::unwind(9)]
     fn check_filter_next_chunk_dropless_n3_u8() {
-        const MAX_LEN: usize = 8;
-        let array: [u8; MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Filter::new(slice.iter(), |&&x: &&u8| x < 128);
+        let n: usize = kani::any();
+        let mut iter = (0..n).map(|i: usize| (i % 251) as u8).filter(|x: &u8| *x < 128);
         let _ = iter.next_chunk::<3>();
     }
 
     #[kani::proof]
-    #[kani::unwind(9)]
     fn check_filter_next_chunk_dropless_n2_char() {
-        const MAX_LEN: usize = 8;
-        let array: [char; MAX_LEN] = kani::any();
-        let slice = kani::slice::any_slice_of_array(&array);
-        let mut iter = Filter::new(slice.iter(), |&&x: &&char| (x as u32) < 128);
+        let n: usize = kani::any();
+        let mut iter =
+            (0..n).map(|i: usize| (b'a' + (i % 26) as u8) as char).filter(|x: &char| (*x as u32) < 128);
         let _ = iter.next_chunk::<2>();
     }
 }

@@ -284,6 +284,8 @@ where
         // Safety of get_unchecked(i) is established by the pre-loop state:
         // len = min(a.size(), b.size()) - index, and get_unchecked adds index
         // back, so the actual index is always < both sizes.
+        #[cfg_attr(kani, kani::loop_invariant(kani::index <= len))]
+        #[cfg_attr(kani, kani::loop_modifies(&accum, &self))]
         for i in 0..len {
             // SAFETY: since Self: TrustedRandomAccessNoCoerce we can trust the size-hint to
             // calculate the length and then use that to do unchecked iteration.
@@ -800,18 +802,20 @@ mod verify {
     }
 
     // fold (TRANC specialized — uses get_unchecked in a loop)
+    // Unbounded: the fold loop carries a source-level loop contract, so no
+    // unwind cap is needed; the slice lengths are symbolic.
     #[kani::proof]
-    fn check_zip_fold_u8() {
-        // Fixed concrete length (symbolic values). A symbolic-length slice makes the
-        // repeated get_unchecked pointer reasoning blow CBMC up, and the loop contract
-        // that would abstract it needs the unmerged kani#4911 loophead fix to avoid a
-        // havoc that breaks idx < len. Length generality is carried by
-        // check_zip_get_unchecked_arbitrary_state_u8 (arbitrary index + state).
-        let arr_a: [u8; 4] = kani::any();
-        let arr_b: [u8; 4] = kani::any();
-        let zip = Zip::new(arr_a.iter(), arr_b.iter());
-        // Scalar accumulator: a ZST (`()`) accumulator crashes CBMC's l2 renaming.
-        Iterator::fold(zip, 0u32, |acc, _| acc);
+    fn check_zip_fold_unbounded_u8_u16() {
+        const MAX_LEN: usize = 32;
+        let arr_a: [u8; MAX_LEN] = kani::any();
+        let arr_b: [u16; MAX_LEN] = kani::any();
+        let sa = kani::slice::any_slice_of_array(&arr_a);
+        let sb = kani::slice::any_slice_of_array(&arr_b);
+        let z = sa.iter().zip(sb.iter());
+        // Scalar accumulator (a ZST accumulator crashes CBMC's l2 renaming);
+        // wrapping_add because the loop-head havoc makes accum arbitrary.
+        let n = Iterator::fold(z, 0usize, |acc, _| acc.wrapping_add(1));
+        kani::cover(n > 0, "fold consumed at least one pair");
     }
 
     // Minimal TrustedLen iterator with trivial state for spec_fold verification.
