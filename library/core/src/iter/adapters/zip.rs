@@ -845,7 +845,7 @@ mod verify {
     // makes unwrap_unchecked safe (remaining == upper - index, a TrustedLen property
     // of iterator state) cannot appear in a loop_invariant — it needs a size_hint
     // call on generic Self, and no field-level spelling exists for arbitrary
-    // TrustedLen sources. Upstream capability gap; tracked in the PR thread.
+    // TrustedLen sources. Upstream capability gap (model-checking/kani#4993).
     #[kani::proof]
     #[kani::unwind(9)]
     fn check_zip_spec_fold() {
