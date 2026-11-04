@@ -1,6 +1,5 @@
 use core::array;
 use core::mem::MaybeUninit;
-use core::ops::ControlFlow;
 
 use crate::fmt;
 use crate::iter::adapters::SourceIter;
