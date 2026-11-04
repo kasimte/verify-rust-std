@@ -1311,14 +1311,14 @@ mod verify {
     // Content-independent (the unsafe slicing depends only on index arithmetic and the
     // searcher envelope), so the zeroed `symbolic_str` family loses nothing. Searcher calls are
     // stubbed per assumption 2; every stubbing harness resets the ghosts first.
-    // `#[kani::unwind(4)]` on these harnesses bounds the driver's internal empty-match
-    // skip loop; a single stubbed search resolves per call, so the bound is not reached —
-    // verified sufficient (no unwinding-assertion failures in any harness).
+    // These harnesses carry no unwind bound: `SplitInternal`/`MatchesInternal`/
+    // `MatchIndicesInternal` next/next_back/get_end/remainder are loop-free (one stubbed
+    // searcher call, then a slice), so verification is unbounded in the string length with no
+    // loop to unwind.
 
     // SplitInternal::next at symbolic length: stub Some drives the match arm, stub None
     // drives get_end — the first call always yields an element.
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_split() {
         reset_search_ghosts();
@@ -1330,7 +1330,6 @@ mod verify {
 
     // SplitInternal::next_inclusive via the public split_inclusive.
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_inclusive_split() {
         reset_search_ghosts();
@@ -1342,7 +1341,6 @@ mod verify {
 
     // SplitInternal::next_back (its searcher.next_match_back arm) via the public rsplit.
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_match_back_split() {
         reset_search_ghosts();
@@ -1356,7 +1354,6 @@ mod verify {
     // self-recursive first-call path, so up to two stub calls occur — the ghost
     // monotonicity (second start bound by the first) keeps the slice ranges ordered.
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_back_inclusive_split() {
         reset_search_ghosts();
@@ -1369,7 +1366,6 @@ mod verify {
     // SplitInternal::get_end: a nondet stub None on call 1 finishes the iterator, so
     // call 2 returns None — the drive-to-completion end path at symbolic length.
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_get_end_split() {
         reset_search_ghosts();
@@ -1388,7 +1384,6 @@ mod verify {
     // call 1 leaves the iterator live (remainder present), a stub None finishes it
     // via get_end (remainder consumed) — both arms covered.
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_remainder_split() {
         reset_search_ghosts();
@@ -1428,7 +1423,6 @@ mod verify {
     // The first call maps the stubbed searcher result directly, so both arms are live.
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_matches() {
         reset_search_ghosts();
@@ -1440,7 +1434,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_back_matches() {
         reset_search_ghosts();
@@ -1452,7 +1445,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_match_indices() {
         reset_search_ghosts();
@@ -1464,7 +1456,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_back_match_indices() {
         reset_search_ghosts();
@@ -1518,7 +1509,6 @@ mod verify {
     // `rmatches`.
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_split_advanced() {
         reset_search_ghosts();
@@ -1541,7 +1531,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_inclusive_split_advanced() {
         reset_search_ghosts();
@@ -1562,7 +1551,6 @@ mod verify {
     // rsplit is a forward iterator that drives SplitInternal::next_back, so perturb and check
     // with `it.next()` under the reverse stub.
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_match_back_split_advanced() {
         reset_search_ghosts();
@@ -1581,7 +1569,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_matches_advanced() {
         reset_search_ghosts();
@@ -1598,7 +1585,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_back_matches_advanced() {
         reset_search_ghosts();
@@ -1615,7 +1601,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     fn check_next_match_indices_advanced() {
         reset_search_ghosts();
@@ -1640,7 +1625,6 @@ mod verify {
     // One representative per family arm, as above.
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_split_mixed() {
@@ -1656,7 +1640,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_matches_mixed() {
@@ -1673,7 +1656,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     #[kani::stub(<CharSearcher<'_> as Searcher<'_>>::next_match, stub_char_next_match)]
     #[kani::stub(<CharSearcher<'_> as core::str::pattern::ReverseSearcher<'_>>::next_match_back, stub_char_next_match_back)]
     fn check_next_match_indices_mixed() {
@@ -1724,7 +1706,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     fn check_next_chars_hybrid() {
         let s = hybrid_front_str();
         let mut it = s.chars();
@@ -1759,7 +1740,6 @@ mod verify {
     }
 
     #[kani::proof]
-    #[kani::unwind(4)]
     fn check_next_back_chars_hybrid() {
         let s = hybrid_back_str();
         let mut it = s.chars();
