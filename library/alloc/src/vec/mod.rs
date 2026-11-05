@@ -2538,6 +2538,11 @@ impl<T, A: Allocator> Vec<T, A> {
     /// assert_eq!(vec, [2, 3, 4]);
     /// ```
     #[stable(feature = "vec_retain_mut", since = "1.61.0")]
+    #[safety::requires(true)]
+    #[safety::ensures(|_| self.len() <= old(self.len()))]
+    #[cfg_attr(kani, kani::modifies(unsafe {
+        core::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len())
+    }))]
     pub fn retain_mut<F>(&mut self, mut f: F)
     where
         F: FnMut(&mut T) -> bool,
@@ -2621,7 +2626,7 @@ impl<T, A: Allocator> Vec<T, A> {
         // SAFETY: previous `read` is always less than original_len.
         unsafe { ptr::drop_in_place(&mut *g.v.as_mut_ptr().add(read)) };
 
-        #[safety::loop_invariant(g.write < g.read && g.read <= g.original_len)]
+        #[safety::loop_invariant(g.write < g.read && g.read <= g.original_len && g.write < g.original_len)]
         #[cfg_attr(kani,
                    core::kani::loop_modifies(
                        unsafe { core::slice::from_raw_parts_mut(g.v.as_mut_ptr(), g.original_len) },
@@ -4817,13 +4822,31 @@ mod verify {
     // capacity from `any_vec_symcap`; loop-bearing functions run at a small
     // bounded length.
 
-    // retain_mut: exercises the real in-place loop, which carries the
-    // loop_invariant/loop_modifies contract at its `while` in the body above.
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn verify_retain_mut_mixed() {
-        let mut v = any_vec_u8::<4>();
-        let n = v.len();
+    // Unbounded symbolic Vec<u8>: symbolic capacity and length with NO small-N
+    // unwind bound, buffer initialized via write_bytes. The only assume is the
+    // allocation-validity guard (keeps Layout::array::<u8> in range), not a
+    // length bound.
+    fn any_vec_unbounded() -> Vec<u8> {
+        let sz: usize = kani::any();
+        kani::assume(sz <= (isize::MAX as usize) / 4);
+        let mut v: Vec<u8> = Vec::with_capacity(sz);
+        // SAFETY: sz bytes of capacity were just reserved.
+        unsafe {
+            core::ptr::write_bytes(v.as_mut_ptr(), kani::any(), sz);
+            v.set_len(sz);
+        }
+        v
+    }
+
+    // retain_mut via an OUTER proof_for_contract over an unbounded symbolic
+    // input: the function carries a trivial `requires`, a `modifies` over its
+    // buffer, and a len-non-growth `ensures`; its in-place loop carries the
+    // pure index/length loop invariant. No `#[kani::unwind]` — the length is
+    // symbolic-unbounded. Re-tests whether the symbolic-unbounded write-set is
+    // tractable under the outer-contract formulation.
+    #[cfg_attr(kani, kani::proof_for_contract(Vec::retain_mut))]
+    fn verify_retain_mut_unbounded_contract() {
+        let mut v = any_vec_unbounded();
         v.retain_mut(|x| {
             let keep: bool = kani::any();
             if keep {
@@ -4831,8 +4854,6 @@ mod verify {
             }
             keep
         });
-        assert!(v.len() <= n);
-        kani::cover(v.len() < n, "a removal is reachable");
     }
 
     #[kani::proof_for_contract(Vec::from_raw_parts)]
